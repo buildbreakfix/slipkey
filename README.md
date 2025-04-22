@@ -184,3 +184,92 @@ The protocol is designed for the server to be authoritative when it comes to tim
 
 **What happens if the client gets extremely lucky and achieves a very high score in a short period of time?**
 While improbable, it is possible for clients to arrive at a high scoring solution in a very short period of time. The server can control for these "lucky" outcomes by enforcing a maximum score for each submission or assigning credits dynamically based on chain length, or time since last solve, in addition to the score.
+
+
+## Specification
+
+The Slipkey protocol standard is defined as follows:
+
+#### 1. Client Request Format
+The client must submit a JSON payload to the server with the following fields:
+
+| Field       | Type     | Description                                                                 |
+|-------------|----------|-----------------------------------------------------------------------------|
+| `block`     | String   | The timestamp of the block being solved, in ISO 8601 format.               |
+| `publicKey` | String   | The public key of the client, represented as a hexadecimal string.         |
+| `nonce`     | String   | A randomly generated value used to solve the hashing problem.             |
+| `state`     | String   | (Optional) The JWT representing the server's state from the previous block.|
+| `create`    | Boolean  | (Optional) Indicates account creation. Must be `true` for the genesis block.|
+
+#### 2. Server Response Format
+The server responds with a JSON payload containing the following fields:
+
+| Field       | Type     | Description                                                                 |
+|-------------|----------|-----------------------------------------------------------------------------|
+| `block`     | String   | The timestamp of the block that was solved.                                |
+| `len`       | Integer  | The length of the chain solved by the client.                              |
+| `state`     | String   | The JWT representing the server's updated state.                          |
+| `expires`   | Integer  | (Optional) The timestamp when the token expires, in UNIX epoch format.     |
+| `credit`    | Integer  | (Optional) The total credit earned by the client.                         |
+
+#### 3. Hashing Algorithm
+The hashing algorithm used for solving blocks must meet the following criteria:
+- Input: Concatenation of `publicKey`, `block`, `state` (if provided), and `nonce`.
+- Output: A hexadecimal string representing the hash value.
+- Scoring: Determined by the number of leading zeros in the hash output.
+
+#### 4. Proof-of-Work Validation
+The server validates the proof-of-work solution as follows:
+1. Verify the `state` JWT (if provided) for signature validity and expiration.
+2. Ensure the `block` timestamp is in the future relative to the server's clock.
+3. Recompute the hash using the provided inputs and verify the score is greater than 0.
+
+#### 5. JWT Structure
+The server issues a JWT with the following structure:
+
+**Header:**
+Use a standard JSON Web Token Header such as:
+
+```json
+{
+  "alg": "HS256",
+  "typ": "JWT"
+}
+```
+
+**Payload:**
+| Field       | Type     | Description                                                                 |
+|-------------|----------|-----------------------------------------------------------------------------|
+| `iat`       | Integer  | The timestamp when the JWT was issued, in UNIX epoch format.               |
+| `publicKey` | String   | The public key of the client.                                              |
+| `block`     | String   | The timestamp of the solved block.                                         |
+| `len`       | Integer  | The length of the chain solved by the client.                              |
+| `credit`    | Integer  | (Optional) The total credit earned by the client.                         |
+
+#### 6. Error Codes
+The server must return the following HTTP status codes for error handling:
+- `401 Unauthorized`: Invalid `state`, expired JWT, or invalid proof-of-work solution.
+- `400 Bad Request`: Malformed request payload or missing required fields.
+- `500 Internal Server Error`: Unexpected server-side error. Client is expected to retry.
+
+#### 7. Time Synchronization
+The server's clock is authoritative. Clients must account for potential clock drift by selecting block start timestamps with sufficient buffer time for latency and solutioning.
+
+### Optional Features
+
+- **Expiration**: The server may include an `expires` field in the response to indicate token validity.
+- **Credit**: Credits may be adjusted dynamically based on server-defined rules.
+
+#### Credit Calculation
+
+The server may calculate credit based on:
+- Time elapsed since the last solved block.
+- Score of the current solution.
+- Chain length.
+- Specific incentives tied to the `publicKey`.
+
+Credit is increemented before generating a new JWT.
+
+The server must maintain a monotonic `debit` table for each `publicKey` to prevent double spending. The server ensures:
+- `credits > debits + (cost of action)` before allowing an action.
+- Debits are incremented atomically when an action is performed.
