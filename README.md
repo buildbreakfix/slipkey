@@ -1,5 +1,7 @@
 # slipkey
 
+![Slipkey Logo](assets/logo.png)
+
 ## Overview
 The slipkey standard enables an unlimited number of anonymous clients to interact with a stateless server. It is built on three foundational concepts:
 
