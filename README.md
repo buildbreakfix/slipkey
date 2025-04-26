@@ -26,8 +26,8 @@ Slipkey can be applied to various scenarios, including:
 
 ## How it works?
 
-### Step 1: Client solution
-First, the client generates a public and private key pair. The private key is stored securely.
+### Step 1: Client slip generation
+First, the client generates a public and private key pair. The private key is stored securely on device.
 
 Next, the client selects a "block" to solve. Blocks are time windows (between the current time and some time in the future) of variable size, which must be greater than the last solved block. The block size is selectable by the client, who makes the following tradeoff:
 
@@ -36,10 +36,9 @@ Next, the client selects a "block" to solve. Blocks are time windows (between th
 
 The initial ("genesis") block must contain the "create" flag. The initial block does not contain any server state.
 
-An example initial request from the client can be seen below:
+An example of the claims from the client can be seen below:
 
 ```json
-// POST /.slipkey/auth
 {
     "block": "2025-04-13 00:00",
     "publicKey": "abcdef0123456789",
@@ -49,7 +48,7 @@ An example initial request from the client can be seen below:
 }
 ```
 
-The client combines the `publicKey`, the `block`, and the `state` signature with a `nonce` and hashes the result. The `nonce` is randomly selected to maximize the value of the solution. The value of the solution is determined by the number of leading zeros in the result. For example:
+The client then combines the `publicKey`, the `block`, and the `state` signature with a `nonce` and hashes the result. The `nonce` is randomly selected to maximize the value of the hashing solution. The score of the solution is determined by the number of leading zeros in the result. For example:
 
 ```
 Score:
@@ -58,6 +57,27 @@ Score:
 2 - 00XXXXXXXXXXXXXX
 ...
 ```
+
+Finally, the client packages the object above inside the "claims" of a JSON web token. The algorithm used should be one that uses assymetric encryption, for example RSA.
+
+```
+{
+  "alg": "RSA",
+  "typ": "JWT"
+}
+.
+{ ...Claims... }
+.
+{ Signature }
+```
+
+The `signature` block allows the server to authenticate this request as originating from the owner of the public key in the claims. This guarentees only the client can advance its own state by providing a signature signed by the public key presented.
+
+Finally, the JSON Web Token (JWT) can be privided to the `GET /.slipkey/auth` endpoint of the server, with an authentication header containing the JWT:
+
+> Authentication: Bearer { JWT }
+> // Example
+> Authentication: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiYWRtaW4iOnRydWUsImlhdCI6MTUxNjIzOTAyMn0.KMUFsIDTnFmyG3nMiGM6H9FNFUROf3wh7SmqJp-QV30
 
 ### Step 2: Server verification
 
@@ -73,7 +93,7 @@ Once the server has verified the block timing and solution, a new JWT is issued 
 
 ```json
 {
-  "alg": "HS256",
+  "alg": "RSA",
   "typ": "JWT"
 }
 .
