@@ -210,8 +210,8 @@ While improbable, it is possible for clients to arrive at a high scoring solutio
 
 The Slipkey protocol standard is defined as follows:
 
-#### 1. Client Request Format
-The client must submit a JSON payload to the server with the following fields:
+#### 1. Client Slip Format
+The client must submit a JWT to the server with the following fields in its claims:
 
 | Field       | Type     | Description                                                                 |
 |-------------|----------|-----------------------------------------------------------------------------|
@@ -220,6 +220,10 @@ The client must submit a JSON payload to the server with the following fields:
 | `nonce`     | String   | A randomly generated value used to solve the hashing problem.             |
 | `state`     | String   | (Optional) The JWT representing the server's state from the previous block.|
 | `create`    | Boolean  | (Optional) Indicates account creation. Must be `true` for the genesis block.|
+
+The cilent should sign the JWT with it's public/private keypair.
+
+The requst should be an `HTTP` request made to `GET /.slipkey/auth`
 
 #### 2. Server Response Format
 The server responds with a JSON payload containing the following fields:
