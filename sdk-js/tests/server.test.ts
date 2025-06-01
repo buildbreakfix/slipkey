@@ -26,7 +26,7 @@ describe('SlipkeyServer', () => {
     test('should create with default config (generates new keys)', async () => {
       const server = await SlipkeyServer.create();
       expect(server).toBeInstanceOf(SlipkeyServer);
-      expect(server.getPublicKeyJwk()).toBeDefined(); // Use getter
+      expect(server.getPublicKeyJwk()).toBeDefined();
       expect((server as any).serverPrivateKeyJwk).toBeDefined();
       expect((server as any).serverName).toBe("SlipkeyServerDefault");
     });
@@ -46,7 +46,7 @@ describe('SlipkeyServer', () => {
         serverName: "TestServer"
       };
       const server = await SlipkeyServer.create(config);
-      expect(server.getPublicKeyJwk()).toEqual(keys.publicKey); // Use getter
+      expect(server.getPublicKeyJwk()).toEqual(keys.publicKey);
       expect((server as any).serverPrivateKeyJwk).toEqual(keys.privateKey);
       expect((server as any).serverName).toBe("TestServer");
 
@@ -63,7 +63,7 @@ describe('SlipkeyServer', () => {
       };
       const server = await SlipkeyServer.create(config);
 
-      const derivedPublicKeyJwk = server.getPublicKeyJwk(); // Use getter
+      const derivedPublicKeyJwk = server.getPublicKeyJwk();
       expect(derivedPublicKeyJwk.kty).toBe(keys.privateKey.kty);
       expect(derivedPublicKeyJwk.n).toBe(keys.privateKey.n);
       expect(derivedPublicKeyJwk.e).toBe(keys.privateKey.e);
@@ -126,10 +126,19 @@ describe('SlipkeyServer', () => {
       expect(serverResponse.score).toBeGreaterThanOrEqual(defaultTargetScore);
       expect(serverResponse.creditEarned).toBeGreaterThan(0);
 
-      const { payload: serverStatePayload } = await verifyJwt(serverResponse.newServerStateToken, server.getPublicKeyJwk()); // Use getter
+      const { payload: serverStatePayload } = await verifyJwt(serverResponse.newServerStateToken, server.getPublicKeyJwk());
       expect(serverStatePayload.len).toBe(1);
       expect(serverStatePayload.credit).toBe(serverResponse.creditEarned);
-      expect(serverStatePayload.publicKey).toEqual(freshClient.getPublicJwk());
+
+      // Compare essential components of the public key JWK
+      const clientPublicJwkForComparison = freshClient.getPublicJwk();
+      const serverStateClientPublicKey = serverStatePayload.publicKey as jose.JWK;
+      expect(serverStateClientPublicKey.kty).toEqual(clientPublicJwkForComparison.kty);
+      expect(serverStateClientPublicKey.n).toEqual(clientPublicJwkForComparison.n);
+      expect(serverStateClientPublicKey.e).toEqual(clientPublicJwkForComparison.e);
+      // Server might add 'alg' if client's JWK didn't have it, so don't strictly compare entire object
+      // expect(serverStatePayload.publicKey).toEqual(freshClient.getPublicJwk());
+
       expect(serverStatePayload.block).toBe(blockTimestamp);
 
     }, 20000);
@@ -163,7 +172,7 @@ describe('SlipkeyServer', () => {
       expect(serverResponse2.score).toBeGreaterThanOrEqual(defaultTargetScore);
       expect(serverResponse2.creditEarned).toBeGreaterThan(0);
 
-      const { payload: serverStatePayload2 } = await verifyJwt(serverResponse2.newServerStateToken, server.getPublicKeyJwk()); // Use getter
+      const { payload: serverStatePayload2 } = await verifyJwt(serverResponse2.newServerStateToken, server.getPublicKeyJwk());
       expect(serverStatePayload2.credit).toEqual(serverResponse2.creditEarned);
       expect(serverResponse2.creditEarned).toBeGreaterThan(serverResponse1.creditEarned);
 
