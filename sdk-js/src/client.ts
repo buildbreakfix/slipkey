@@ -6,41 +6,81 @@ import { solveProofOfWork } from './pow';
  * Configuration for the SlipkeyClient.
  */
 export interface SlipkeyClientConfig {
-  // Example: serverUrl?: string;
-  // For now, no specific configuration is needed by the client's core logic.
+  defaultTargetScore?: number;
+  defaultBlockSizeMs?: number;
+  initialPrivateKeyJwk?: jose.JWK; // To allow providing an existing private key
 }
 
 export class SlipkeyClient {
-  private privateKeyJwk!: jose.JWK; // Definite assignment assertion
-  private publicKeyJwk!: jose.JWK;  // Definite assignment assertion
-  private pemPublicKey!: string;    // Definite assignment assertion
+  private privateKeyJwk!: jose.JWK;
+  private publicKeyJwk!: jose.JWK;
+  private pemPublicKey!: string;
 
   public state: string | null = null;
 
+  // Default values for PoW parameters
+  private defaultTargetScore: number = 1;
+  private defaultBlockSizeMs: number = 60000; // 1 minute
+
   // Private constructor to enforce instantiation via the static factory method.
-  private constructor(config?: SlipkeyClientConfig) {
-    // Configuration options can be used here if provided.
+  private constructor() {
+    // Initial values for score and block size are set via config in the create method
   }
 
   /**
-   * Initializes the client's cryptographic keys.
+   * Exports a copy of the client's private key in JWK format.
+   * This allows the key to be persisted and reused.
+   * @returns A deep copy of the private key JWK.
+   */
+  public exportPrivateKeyJwk(): jose.JWK {
+    if (!this.privateKeyJwk) {
+      throw new Error('Client not fully initialized. Private key not available.');
+    }
+    // Return a deep copy to prevent external modification of the internal key
+    return JSON.parse(JSON.stringify(this.privateKeyJwk));
+  }
+
+  /**
+   * Initializes the client's cryptographic keys, optionally using a provided private key.
+   * Also converts the public key to PEM format and caches it.
    * This method is called by the static factory `create`.
    */
-  private async _initializeAndCacheKeys(): Promise<void> {
-    const keyPair = await generateRsaKeyPair();
-    this.privateKeyJwk = keyPair.privateKey;
-    this.publicKeyJwk = keyPair.publicKey;
-    this.pemPublicKey = await jwkToSpkiPem(this.publicKeyJwk); // Use renamed function
+  private async _initializeAndCacheKeys(config?: SlipkeyClientConfig): Promise<void> {
+    const initialPrivateKeyJwk = config?.initialPrivateKeyJwk;
+    if (initialPrivateKeyJwk) {
+      // Validate that essential private key fields and corresponding public fields are present
+      if (!initialPrivateKeyJwk.d || !initialPrivateKeyJwk.n || !initialPrivateKeyJwk.e || !initialPrivateKeyJwk.kty) {
+          throw new Error("Provided initialPrivateKeyJwk is incomplete or not a valid RSA private key.");
+      }
+      this.privateKeyJwk = initialPrivateKeyJwk;
+      this.publicKeyJwk = { // Construct public JWK from private JWK's components
+          kty: initialPrivateKeyJwk.kty,
+          n: initialPrivateKeyJwk.n,
+          e: initialPrivateKeyJwk.e,
+          alg: initialPrivateKeyJwk.alg || 'RS256', // Ensure alg is present
+      };
+    } else {
+      const keyPair = await generateRsaKeyPair(); // This returns { publicKey, privateKey } after jose.exportJWK
+      this.privateKeyJwk = keyPair.privateKey;
+      this.publicKeyJwk = keyPair.publicKey;
+    }
+    this.pemPublicKey = await jwkToSpkiPem(this.publicKeyJwk);
   }
 
   /**
    * Creates and initializes a new SlipkeyClient instance.
-   * @param config Optional configuration for the client.
+   * @param config Optional configuration for the client, including initial keys or PoW parameter defaults.
    * @returns A promise that resolves to an initialized SlipkeyClient instance.
    */
   public static async create(config?: SlipkeyClientConfig): Promise<SlipkeyClient> {
-    const client = new SlipkeyClient(config);
-    await client._initializeAndCacheKeys();
+    const client = new SlipkeyClient();
+    // Initialize keys first, possibly using a key from config
+    await client._initializeAndCacheKeys(config);
+
+    // Set PoW parameter defaults from config, or keep pre-defined defaults
+    client.defaultTargetScore = config?.defaultTargetScore ?? client.defaultTargetScore;
+    client.defaultBlockSizeMs = config?.defaultBlockSizeMs ?? client.defaultBlockSizeMs;
+
     return client;
   }
 
@@ -73,18 +113,20 @@ export class SlipkeyClient {
    * Generates the "slip" by solving a proof-of-work challenge and preparing claims.
    *
    * @param blockTimestamp The target block timestamp (ISO 8601 format string).
-   * @param targetScore The PoW target score. Defaults to 1.
-   * @param currentServerStateOverride Optional JWT from the server, overrides internal client state if provided.
+   * @param blockTimestampOrBlockSizeMs Optional. Either an ISO 8601 timestamp string for the block,
+   *                                    or a number representing block size in milliseconds (to be added to current time).
+   *                                    If undefined, uses `this.defaultBlockSizeMs`.
+   * @param targetScore Optional. The PoW target score. If undefined, uses `this.defaultTargetScore`.
+   * @param currentServerStateOverride Optional. JWT from the server, overrides internal client state if provided.
    * @returns A promise that resolves to an object containing slip claims and PoW results,
    *          or null if PoW fails.
    */
   public async generateSlip(
-    blockTimestamp: string,
-    targetScore: number = 1,
-    currentServerStateOverride?: string | null // Optional: can be undefined, null, or a string
-  ): Promise<{ slipClaims: object; actualScore: number; nonce: string; hash: string } | null> {
+    blockTimestampOrBlockSizeMs?: string | number,
+    targetScore?: number,
+    currentServerStateOverride?: string | null
+  ): Promise<{ slipClaims: object; actualScore: number; nonce: string; hash: string; token: string } | null> {
     if (!this.pemPublicKey || !this.publicKeyJwk) {
-      // This check ensures _initializeAndCacheKeys has completed.
       throw new Error('Client not fully initialized. Keys not available.');
     }
 
@@ -93,13 +135,38 @@ export class SlipkeyClient {
     // 2. Otherwise, use the client's internal state.
     const stateForPow = currentServerStateOverride !== undefined ? currentServerStateOverride : this.state;
 
+    // Determine actualBlockTimestamp
+    let actualBlockTimestamp: string;
+    if (typeof blockTimestampOrBlockSizeMs === 'string') {
+      actualBlockTimestamp = blockTimestampOrBlockSizeMs;
+    } else if (typeof blockTimestampOrBlockSizeMs === 'number') {
+      actualBlockTimestamp = new Date(Date.now() + blockTimestampOrBlockSizeMs).toISOString();
+    } else {
+      actualBlockTimestamp = new Date(Date.now() + this.defaultBlockSizeMs).toISOString();
+    }
+
+    // Determine actualTargetScore
+    const actualTargetScore = targetScore ?? this.defaultTargetScore;
+
+    // For debugging PoW input string consistency
+    const powInputClient = `${this.pemPublicKey}${actualBlockTimestamp}${stateForPow === null ? '' : stateForPow}`;
+    // Nonce will be added by solveProofOfWork, but this is the base string it works with internally for each attempt.
+    // solveProofOfWork itself would log the full string with nonce for a more direct comparison if needed.
+    // However, solveProofOfWork returns the successful nonce and hash.
+    // We need the string that *led* to that successful hash.
+
     const powResult = await solveProofOfWork(
       this.pemPublicKey,
-      blockTimestamp,
-      stateForPow, // Pass null if that's the determined state
-      targetScore
-      // maxIterations can be added if needed, defaults in solveProofOfWork
+      actualBlockTimestamp,
+      stateForPow,
+      actualTargetScore
     );
+
+    // Log the input that resulted in the successful PoW
+    if (powResult) {
+      const finalPowInputClient = `${this.pemPublicKey}${actualBlockTimestamp}${stateForPow === null ? '' : stateForPow}${powResult.nonce}`;
+      console.log(`[CLIENT PoW INPUT]: "${finalPowInputClient}" (Score: ${powResult.score}, Hash: ${powResult.hash})`);
+    }
 
     if (!powResult) {
       return null; // PoW failed
@@ -108,34 +175,29 @@ export class SlipkeyClient {
     const createFlag = stateForPow === null;
 
     const slipClaims = {
-      pubkey: this.publicKeyJwk, // Client's public key in JWK format for the JWT
-      block: blockTimestamp,     // Block identifier (timestamp)
+      pubkey: this.publicKeyJwk,
+      block: actualBlockTimestamp,
       nonce: powResult.nonce,
-      state: stateForPow,        // State used for PoW (null if creating new)
+      state: stateForPow,
       create: createFlag,
     };
+
+    // Sign the slipClaims to generate the client token
+    if (!this.privateKeyJwk) { // Should be initialized if this method is callable
+      throw new Error('Client not fully initialized. Private key not available for signing.');
+    }
+    const token = await signJwt(slipClaims as jose.JWTPayload, this.privateKeyJwk);
 
     return {
       slipClaims,
       actualScore: powResult.score,
       nonce: powResult.nonce,
       hash: powResult.hash,
+      token: token, // Include the generated token in the result
     };
   }
 
-  /**
-   * Creates a client token (JWT) by signing the provided slip claims.
-   *
-   * @param slipClaims The slip claims object (intended as JWT payload).
-   * @returns A promise that resolves to the signed JWT string.
-   */
-  public async createClientToken(slipClaims: object): Promise<string> {
-    if (!this.privateKeyJwk) {
-      throw new Error('Client not fully initialized. Private key not available.');
-    }
-    const payload = slipClaims as jose.JWTPayload;
-    return signJwt(payload, this.privateKeyJwk);
-  }
+  // createClientToken method is now removed.
 
   /**
    * Processes the server's response and updates the client's internal state.
@@ -144,5 +206,29 @@ export class SlipkeyClient {
    */
   public processServerResponse(serverResponse: { state: string; [key: string]: any }): void {
     this.state = serverResponse.state;
+  }
+
+  /**
+   * Updates the client's default Proof-of-Work parameters.
+   * @param newDefaults An object containing new default values for targetScore and/or blockSizeMs.
+   */
+  public updateDefaults(newDefaults: { defaultTargetScore?: number; defaultBlockSizeMs?: number }): void {
+    if (newDefaults.defaultTargetScore !== undefined) {
+      if (newDefaults.defaultTargetScore > 0) {
+        this.defaultTargetScore = newDefaults.defaultTargetScore;
+      } else {
+        console.warn(`Invalid defaultTargetScore provided: ${newDefaults.defaultTargetScore}. Must be positive. Retaining existing value: ${this.defaultTargetScore}.`);
+        // Or: throw new Error('defaultTargetScore must be positive.');
+      }
+    }
+
+    if (newDefaults.defaultBlockSizeMs !== undefined) {
+      if (newDefaults.defaultBlockSizeMs > 0) {
+        this.defaultBlockSizeMs = newDefaults.defaultBlockSizeMs;
+      } else {
+        console.warn(`Invalid defaultBlockSizeMs provided: ${newDefaults.defaultBlockSizeMs}. Must be positive. Retaining existing value: ${this.defaultBlockSizeMs}.`);
+        // Or: throw new Error('defaultBlockSizeMs must be positive.');
+      }
+    }
   }
 }

@@ -88,12 +88,9 @@ async function generateFirstSlip(client: SlipkeyClient) {
     console.log("  PoW Nonce:", slipResult.nonce);
     console.log("  PoW Hash:", slipResult.hash);
     console.log("  PoW Score (actual):", slipResult.actualScore);
+    console.log("  Client Token (JWT):", slipResult.token); // Token is now part of slipResult
 
-    // Create the client token (JWT) from the slip claims
-    const clientToken = await client.createClientToken(slipResult.slipClaims);
-    console.log("Client Token (JWT to send to server):", clientToken);
-
-    return clientToken;
+    return slipResult.token;
   } else {
     console.error("Failed to generate genesis slip (PoW might have failed or client not initialized).");
     return null;
@@ -154,9 +151,7 @@ async function generateNextSlip(client: SlipkeyClient) {
     console.log("  Slip Claims:", slipResult.slipClaims); // Note: create flag should be false
     console.log("  PoW Nonce:", slipResult.nonce);
     console.log("  PoW Score (actual):", slipResult.actualScore);
-
-    const clientToken = await client.createClientToken(slipResult.slipClaims);
-    console.log("Client Token for subsequent slip:", clientToken);
+    console.log("  Client Token (JWT):", slipResult.token); // Token is now part of slipResult
 
     // This new token would be sent to the server.
     // The server would validate it against its expected state (the previous JWT it sent).
@@ -189,16 +184,13 @@ Let `client` be an instance of `SlipkeyClient`.
 *   **`client.getPublicJwk(): jose.JWK`**
     Returns the client's public key in JWK format.
 
-*   **`client.generateSlip(blockTimestamp: string, targetScore: number = 1, currentServerStateOverride?: string | null): Promise<SlipResult | null>`**
-    Generates a slip.
-    *   `blockTimestamp`: ISO 8601 string for the "block" claim.
-    *   `targetScore`: Required PoW score (leading zeros). Defaults to 1.
-    *   `currentServerStateOverride`: Optional. If provided, this JWT string is used as the "previous state" for PoW, overriding the client's internal `state`. Use `null` explicitly for a genesis slip if overriding.
-    *   Returns a promise that resolves to an object `{ slipClaims: object; actualScore: number; nonce: string; hash: string }` if successful, or `null` if PoW fails.
-        *   `slipClaims`: Object containing `pubkey` (client's public JWK), `block`, `nonce`, `state` (the state used for PoW), and `create` (boolean flag).
-
-*   **`client.createClientToken(slipClaims: object): Promise<string>`**
-    Signs the `slipClaims` object with the client's private key and returns a JWT string.
+    *   `client.generateSlip(blockTimestampOrBlockSizeMs?: string | number, targetScore?: number, currentServerStateOverride?: string | null): Promise<{ slipClaims: object; actualScore: number; nonce: string; hash: string; token: string } | null>`**
+    Generates a slip and the corresponding client JWT.
+    *   `blockTimestampOrBlockSizeMs`: Optional. ISO 8601 string for `block` or number for block size in ms from now. Uses client default if omitted.
+    *   `targetScore`: Optional. Required PoW score. Uses client default if omitted.
+    *   `currentServerStateOverride`: Optional. Previous state JWT to override client's internal state.
+    *   Returns a promise that resolves to an object containing `slipClaims`, PoW details (`actualScore`, `nonce`, `hash`), and the generated `token` string if successful, or `null` if PoW fails.
+        *   `slipClaims`: Object containing `pubkey` (client's public JWK), `block`, `nonce`, `state` (the state used for PoW), and `create` (boolean flag). This is the payload of the generated `token`.
 
 *   **`client.processServerResponse(serverResponse: { state: string, ...any }): void`**
     Updates the client's internal state with the new JWT provided by the server.
@@ -206,6 +198,128 @@ Let `client` be an instance of `SlipkeyClient`.
 
 *   **`client.state: string | null`**
     The current state JWT held by the client, received from the server. Initially `null`.
+
+*   **`client.exportPrivateKeyJwk(): jose.JWK`**
+    Exports a deep copy of the client's private key in JWK format. Useful for persisting the key.
+
+*   **`client.updateDefaults(newDefaults: { defaultTargetScore?: number; defaultBlockSizeMs?: number }): void`**
+    Updates the client's default PoW parameters (`defaultTargetScore`, `defaultBlockSizeMs`).
+
+## Managing Client Keys (Persistence)
+
+To maintain the same Slipkey identity across different sessions or even devices, the client's RSA private key must be persisted. If a key is not persisted, `SlipkeyClient.create()` will generate a new key pair each time, resulting in a new, distinct identity.
+
+The SDK allows you to export the private key and then re-initialize a `SlipkeyClient` instance with it.
+
+### Exporting the Key
+
+```typescript
+// Assuming 'client' is an initialized SlipkeyClient instance
+const privateKeyJwk = client.exportPrivateKeyJwk();
+// Now you can store `privateKeyJwk` (e.g., as a JSON string).
+```
+
+### Saving and Loading (Browser localStorage Example)
+
+This example shows how to save the private key to `localStorage` and load it when initializing a new client.
+
+```typescript
+// --- Saving the key ---
+// const client = await SlipkeyClient.create(); // Or your existing client instance
+// const privateKeyToSave = client.exportPrivateKeyJwk();
+// localStorage.setItem('slipkeyPrivateKey', JSON.stringify(privateKeyToSave));
+// console.log("Private key saved to localStorage.");
+
+// --- Later, in a new session or page load ---
+async function getClientWithPersistence() {
+  const storedKeyString = localStorage.getItem('slipkeyPrivateKey');
+  let initialKeyJwk: jose.JWK | undefined = undefined;
+
+  if (storedKeyString) {
+    try {
+      initialKeyJwk = JSON.parse(storedKeyString);
+      console.log("Private key loaded from localStorage.");
+    } catch (e) {
+      console.error("Error parsing stored private key:", e);
+      // Optionally clear the invalid key: localStorage.removeItem('slipkeyPrivateKey');
+    }
+  }
+
+  // Initialize client:
+  // If initialKeyJwk is valid, it will be used.
+  // If initialKeyJwk is undefined or invalid (and create() handles invalid keys by generating new ones,
+  // or throws an error which you should catch), a new key pair will be generated.
+  const client = await SlipkeyClient.create({ initialPrivateKeyJwk: initialKeyJwk });
+
+  // If you want to ensure the key is saved again if it was newly generated:
+  // if (!initialKeyJwk && client.exportPrivateKeyJwk) { // Check if a new key was generated
+  //    const newPrivateKey = client.exportPrivateKeyJwk();
+  //    localStorage.setItem('slipkeyPrivateKey', JSON.stringify(newPrivateKey));
+  //    console.log("New private key generated and saved.");
+  // }
+
+  return client;
+}
+
+// Example usage:
+// getClientWithPersistence().then(client => {
+//   console.log("Client ready, public key (PEM):", client.getPublicKey());
+// });
+```
+
+### Saving and Loading (Node.js File Example - Conceptual)
+
+This is a conceptual example for Node.js environments. It requires file system access (e.g., using the `fs/promises` module).
+
+```javascript
+// Node.js - Conceptual Example (requires 'fs/promises')
+// import { writeFile, readFile } from 'fs/promises';
+// import path from 'path'; // For constructing file paths
+
+// async function saveKeyToFile(keyJwk, filePath) {
+//   try {
+//     await writeFile(filePath, JSON.stringify(keyJwk, null, 2), 'utf-8');
+//     console.log(`Key saved to ${filePath}`);
+//   } catch (e) {
+//     console.error(`Error saving key to file:`, e);
+//   }
+// }
+
+// async function loadKeyFromFile(filePath) {
+//   try {
+//     const keyString = await readFile(filePath, 'utf-8');
+//     return JSON.parse(keyString);
+//   } catch (e) {
+//     if (e.code === 'ENOENT') {
+//       console.log(`Key file not found at ${filePath}. A new key will be generated if this was for initialization.`);
+//     } else {
+//       console.error(`Error loading key from file ${filePath}:`, e);
+//     }
+//     return null; // Return null if not found or error
+//   }
+// }
+
+// // Example Usage:
+// // const keyFilePath = path.join(__dirname, 'my-slipkey.json'); // Or some other persistent path
+// //
+// // async function main() {
+// //   let loadedKey = await loadKeyFromFile(keyFilePath);
+// //   const client = await SlipkeyClient.create({ initialPrivateKeyJwk: loadedKey });
+// //
+// //   // If a new key was generated because one wasn't loaded, save it.
+// //   if (!loadedKey) {
+// //     const privateKeyToSave = client.exportPrivateKeyJwk();
+// //     await saveKeyToFile(privateKeyToSave, keyFilePath);
+// //   }
+// //
+// //   console.log("Client ready. Public Key (PEM):", client.getPublicKey());
+// // }
+// // main();
+```
+Make sure to handle file paths and permissions appropriately in a real Node.js application.
+
+### Security Note
+**Important:** Private keys are sensitive credentials. Storing them in plaintext in mediums like `localStorage` might be acceptable for certain low-risk browser applications but is generally not recommended for applications handling valuable assets or sensitive data. For more secure storage, consider platform-specific secure storage mechanisms (like browser's Web Storage API with caution, or `crypto.subtle` for non-exportable keys if the use case changes) or, in Node.js, appropriately permissioned files or system keychain services. The security of the stored key is the responsibility of the application using this SDK.
 
 ## Error Handling
 
@@ -215,7 +329,95 @@ Let `client` be an instance of `SlipkeyClient`.
 
 ## Browser Usage
 
-This SDK uses the Web Crypto API (`crypto.subtle`) which is available in all modern web browsers. When using this SDK in a browser project, you will typically bundle it with your application using a tool like Webpack, Rollup, or Parcel. These bundlers will handle the ES module imports.
+This SDK uses the Web Crypto API (`crypto.subtle`) which is available in all modern web browsers.
+
+### Using with a Module Bundler (Recommended)
+When using this SDK in a modern browser project, you will typically bundle it with your application using a tool like Webpack, Rollup, or Parcel. These bundlers will handle the ES module imports correctly.
+```typescript
+// Your application code (e.g., main.ts or app.js)
+import { SlipkeyClient } from 'slipkey-sdk';
+
+async function main() {
+  const client = await SlipkeyClient.create();
+  // ... use client
+}
+main();
+```
+
+### Using with a `<script>` Tag (Standalone Bundle)
+
+For direct browser usage without a module bundler, a standalone bundle (e.g., in UMD or IIFE format) of the SDK would be needed. Such a bundle would typically expose the `SlipkeyClient` on a global object (e.g., `window.SlipkeyClient` or `window.SlipkeySDK.SlipkeyClient`).
+
+Here's an example of how you might use it:
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Slipkey SDK Script Tag Example</title>
+  <!--
+    Assuming 'slipkey-sdk.umd.js' is the standalone bundle.
+    Replace with the actual path to your SDK's bundle file.
+  -->
+  <script src="path/to/slipkey-sdk.umd.js"></script>
+</head>
+<body>
+  <h1>Slipkey SDK Test</h1>
+  <button onclick="runSlipkeyDemo()">Run Demo</button>
+  <pre id="output"></pre>
+
+  <script>
+    async function runSlipkeyDemo() {
+      const outputEl = document.getElementById('output');
+      outputEl.textContent = 'Initializing client...\n';
+
+      // Check if the SDK is loaded and SlipkeyClient is available globally
+      if (typeof window.SlipkeyClient === 'undefined') {
+        outputEl.textContent += 'Error: SlipkeyClient not found on window. Ensure the SDK bundle is loaded correctly and exposes SlipkeyClient globally.\n';
+        return;
+      }
+      const SlipkeyClient = window.SlipkeyClient; // Assign for convenience
+
+      try {
+        const client = await SlipkeyClient.create();
+        outputEl.textContent += 'Client created successfully.\n';
+        outputEl.textContent += 'Public Key (PEM): ' + client.getPublicKey() + '\n\n';
+
+        const blockTime = new Date(Date.now() + 30000).toISOString(); // 30s in the future
+        outputEl.textContent += 'Attempting to generate slip for block: ' + blockTime + '\n';
+
+        // Note: The structure of slipResult and how the token is obtained might change
+        // if client.createClientToken() is internalized into generateSlip() in future versions.
+        // This example assumes generateSlip returns an object that includes the client token
+        // or the necessary claims to create one.
+        // For now, we reflect the state *after* Step 6 (internalize createClientToken).
+
+        const slipResult = await client.generateSlip(blockTime, 1); // targetScore 1
+
+        if (slipResult && slipResult.slipClaims) { // Assuming slipClaims contains the token after internalizing createClientToken
+          outputEl.textContent += 'Slip and Token generated!\n';
+          outputEl.textContent += '  Nonce: ' + slipResult.nonce + '\n';
+          outputEl.textContent += '  Score: ' + slipResult.actualScore + '\n';
+          // Let's assume for this example the token is part of slipClaims or directly on slipResult
+          // For the purpose of this README, we'll assume the token is directly available for simplicity,
+          outputEl.textContent += 'Slip and Token generated!\n';
+          outputEl.textContent += '  Nonce: ' + slipResult.nonce + '\n';
+          outputEl.textContent += '  Score: ' + slipResult.actualScore + '\n';
+          outputEl.textContent += '  Client Token: ' + slipResult.token + '\n';
+          outputEl.textContent += '\nDemo finished. This clientToken would be sent to a server.\n';
+        } else {
+          outputEl.textContent += 'Failed to generate slip.\n';
+        }
+      } catch (error) {
+        outputEl.textContent += 'Error: ' + error.message + '\n';
+        console.error('Slipkey Demo Error:', error);
+      }
+    }
+  </script>
+</body>
+</html>
+```
+**Note:** The availability and exact name/path of the UMD/IIFE bundle (e.g., `slipkey-sdk.umd.js`) and how `SlipkeyClient` is exposed globally (`window.SlipkeyClient` or `window.SlipkeySDK.SlipkeyClient`) depend on the project's specific bundling configuration if such a bundle is created. Refer to the SDK's release information or bundling setup for these details.
 
 ## Node.js Usage
 
