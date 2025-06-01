@@ -7,7 +7,7 @@ This is a Python implementation of the `slipkey` protocol, including a `Client` 
 To install the required dependencies, run:
 
 ```bash
-pip install pyjwt click
+pip install pyjwt click cryptography
 ```
 
 ## Usage
