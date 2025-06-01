@@ -1,12 +1,3 @@
-import { webcrypto } from 'node:crypto';
-
-// Ensure globalThis.crypto is available for Web Crypto API usage,
-// especially if this code might run in environments where it's not standard (older Node.js, specific test setups)
-// Jose already relies on this, but good to be explicit for direct Web Crypto API usage.
-if (typeof globalThis.crypto?.subtle === 'undefined') {
-  globalThis.crypto = webcrypto as any;
-}
-
 /**
  * Calculates the SHA-256 hash of a string.
  * Uses the Web Crypto API (crypto.subtle.digest).
@@ -40,20 +31,26 @@ export async function sha256(str: string): Promise<string> {
  * @param state Optional state string.
  * @param targetScore The required number of leading zeros in the hex hash.
  * @param maxIterations The maximum number of iterations to try. Defaults to 1,000,000.
+ * @param deadlineTimestamp Optional. A Unix millisecond timestamp by which the PoW must be solved.
  * @returns A promise that resolves to an object containing the nonce, score, hash, and iterations,
- *          or null if no solution is found within maxIterations.
+ *          or null if no solution is found within maxIterations or by the deadline.
  */
 export async function solveProofOfWork(
   publicKey: string,
-  block: string,
+  block: string, // This is the blockTimestamp (ISO string)
   state: string | null,
   targetScore: number,
-  maxIterations: number = 1000000
+  maxIterations: number = 1000000,
+  deadlineTimestamp?: number
 ): Promise<{ nonce: string, score: number, hash: string, iterations: number } | null> {
   const stateStr = state === null ? '' : state;
 
   for (let i = 0; i < maxIterations; i++) {
-    const nonce = generateRandomNonce(); // Helper function to generate nonce
+    if (deadlineTimestamp && Date.now() > deadlineTimestamp) {
+      console.warn('Proof-of-Work deadline reached.');
+      return null;
+    }
+    const nonce = generateRandomNonce();
     const inputString = `${publicKey}${block}${stateStr}${nonce}`;
     const hash = await sha256(inputString);
     const score = calculateLeadingZeros(hash);

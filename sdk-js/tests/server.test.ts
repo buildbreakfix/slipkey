@@ -1,5 +1,6 @@
+import { jest } from '@jest/globals'; // Import jest for jest.fn()
 import { SlipkeyClient } from '../src/client';
-import { SlipkeyServer, SlipkeyServerConfig } from '../src/SlipkeyServer';
+import { SlipkeyServer, SlipkeyServerConfig, ServerCreditMetadata, CreditCalculationFunction } from '../src/SlipkeyServer';
 import { generateRsaKeyPair, jwkToSpkiPem, signJwt, verifyJwt } from '../src/crypto';
 import * as jose from 'jose';
 import { webcrypto } from 'node:crypto';
@@ -17,8 +18,6 @@ type ServerSuccessResponse = {
   chainLength: number;
   error?: undefined;
 };
-type ServerErrorResponse = { error: string };
-type ProcessClientTokenResponse = ServerSuccessResponse | ServerErrorResponse;
 
 
 describe('SlipkeyServer', () => {
@@ -29,6 +28,21 @@ describe('SlipkeyServer', () => {
       expect(server.getPublicKeyJwk()).toBeDefined();
       expect((server as any).serverPrivateKeyJwk).toBeDefined();
       expect((server as any).serverName).toBe("SlipkeyServerDefault");
+      expect((server as any).stateTokenExpiration).toBe("7d");
+      expect((server as any).calculateCredit).toBeInstanceOf(Function);
+    });
+
+    test('should allow configuring serverName, stateTokenExpiration, and calculateCredit', async () => {
+      const customCreditFn: CreditCalculationFunction = (metadata: ServerCreditMetadata) => metadata.previousCredit + 5;
+      const config: SlipkeyServerConfig = {
+        serverName: "MyCustomServer",
+        defaultStateTokenExpiration: "1h",
+        calculateCredit: customCreditFn
+      };
+      const server = await SlipkeyServer.create(config);
+      expect((server as any).serverName).toBe("MyCustomServer");
+      expect((server as any).stateTokenExpiration).toBe("1h");
+      expect((server as any).calculateCredit).toBe(customCreditFn);
     });
 
     test('should have a usable public key getter', async () => {
@@ -51,8 +65,8 @@ describe('SlipkeyServer', () => {
       expect((server as any).serverName).toBe("TestServer");
 
       const payloadToSign = { test: "data", sub: "testSubject" };
-      const signedToken = await signJwt(payloadToSign, (server as any).serverPrivateKeyJwk);
-      const { payload: verifiedPayload } = await verifyJwt(signedToken, keys.publicKey);
+      const serverSignedToken = await signJwt(payloadToSign, (server as any).serverPrivateKeyJwk, "1m");
+      const { payload: verifiedPayload } = await verifyJwt(serverSignedToken, keys.publicKey);
       expect(verifiedPayload.test).toBe("data");
     });
 
@@ -70,7 +84,7 @@ describe('SlipkeyServer', () => {
       expect(derivedPublicKeyJwk.alg).toBe(keys.privateKey.alg || 'RS256');
 
       const payloadToSign = { test: "data" };
-      const signedToken = await signJwt(payloadToSign, (server as any).serverPrivateKeyJwk);
+      const signedToken = await signJwt(payloadToSign, (server as any).serverPrivateKeyJwk, "1m");
       await expect(verifyJwt(signedToken, derivedPublicKeyJwk)).resolves.toBeDefined();
       await expect(verifyJwt(signedToken, keys.publicKey)).resolves.toBeDefined();
     });
@@ -103,7 +117,7 @@ describe('SlipkeyServer', () => {
         server = await SlipkeyServer.create();
     });
 
-    test('should process a valid Genesis Slip correctly', async () => {
+    test('should process a valid Genesis Slip correctly and issue JWT with default expiration and credit logic', async () => {
       const freshClient = await SlipkeyClient.create();
       const blockTimestamp = futureBlockTime();
 
@@ -124,26 +138,28 @@ describe('SlipkeyServer', () => {
       expect(typeof serverResponse.newServerStateToken).toBe('string');
       expect(serverResponse.chainLength).toBe(1);
       expect(serverResponse.score).toBeGreaterThanOrEqual(defaultTargetScore);
-      expect(serverResponse.creditEarned).toBeGreaterThan(0);
+      expect(serverResponse.creditEarned).toBe((clientSlipResult.actualScore * 10) + 1);
 
       const { payload: serverStatePayload } = await verifyJwt(serverResponse.newServerStateToken, server.getPublicKeyJwk());
       expect(serverStatePayload.len).toBe(1);
       expect(serverStatePayload.credit).toBe(serverResponse.creditEarned);
 
-      // Compare essential components of the public key JWK
       const clientPublicJwkForComparison = freshClient.getPublicJwk();
       const serverStateClientPublicKey = serverStatePayload.publicKey as jose.JWK;
       expect(serverStateClientPublicKey.kty).toEqual(clientPublicJwkForComparison.kty);
       expect(serverStateClientPublicKey.n).toEqual(clientPublicJwkForComparison.n);
       expect(serverStateClientPublicKey.e).toEqual(clientPublicJwkForComparison.e);
-      // Server might add 'alg' if client's JWK didn't have it, so don't strictly compare entire object
-      // expect(serverStatePayload.publicKey).toEqual(freshClient.getPublicJwk());
+      expect(serverStateClientPublicKey.alg).toEqual(clientPublicJwkForComparison.alg || 'RS256');
 
       expect(serverStatePayload.block).toBe(blockTimestamp);
-
+      expect(serverStatePayload.exp).toBeDefined();
+      const iat = serverStatePayload.iat as number;
+      const exp = serverStatePayload.exp as number;
+      const expectedDurationSeconds = 7 * 24 * 60 * 60;
+      expect(exp - iat).toBeCloseTo(expectedDurationSeconds, -1);
     }, 20000);
 
-    test('should process a valid Subsequent Slip correctly', async () => {
+    test('should process a valid Subsequent Slip correctly with default credit logic', async () => {
       const freshClient = await SlipkeyClient.create();
       const block1 = futureBlockTime();
       const slipResult1 = await freshClient.generateSlip(block1, defaultTargetScore);
@@ -170,13 +186,50 @@ describe('SlipkeyServer', () => {
       expect(serverResponse2.newServerStateToken).toBeDefined();
       expect(serverResponse2.chainLength).toBe(2);
       expect(serverResponse2.score).toBeGreaterThanOrEqual(defaultTargetScore);
-      expect(serverResponse2.creditEarned).toBeGreaterThan(0);
+
+      const expectedNewTotalCredit = serverResponse1.creditEarned + (slipResult2.actualScore * 10) + 2;
+      expect(serverResponse2.creditEarned).toBe(expectedNewTotalCredit);
 
       const { payload: serverStatePayload2 } = await verifyJwt(serverResponse2.newServerStateToken, server.getPublicKeyJwk());
       expect(serverStatePayload2.credit).toEqual(serverResponse2.creditEarned);
-      expect(serverResponse2.creditEarned).toBeGreaterThan(serverResponse1.creditEarned);
-
+      expect(serverStatePayload2.exp).toBeDefined();
     }, 30000);
+
+    test('server-issued JWT should use custom expiration from config', async () => {
+        const customExp = "15m";
+        const customExpServer = await SlipkeyServer.create({ defaultStateTokenExpiration: customExp });
+        const freshClient = await SlipkeyClient.create();
+        const clientSlipResult = await freshClient.generateSlip(futureBlockTime(), defaultTargetScore);
+        expect(clientSlipResult).not.toBeNull(); if (!clientSlipResult) return;
+
+        const serverResponse = await customExpServer.processClientToken(clientSlipResult.token, defaultTargetScore);
+        if (serverResponse.error !== undefined) throw new Error(serverResponse.error); // Corrected error check
+
+        const { payload: serverStatePayload } = await verifyJwt(serverResponse.newServerStateToken, customExpServer.getPublicKeyJwk());
+        expect(serverStatePayload.exp).toBeDefined();
+        const iat = serverStatePayload.iat as number;
+        const exp = serverStatePayload.exp as number;
+        expect(exp - iat).toBeCloseTo(15 * 60, -1);
+    });
+
+    test('should use custom credit calculation function if provided', async () => {
+        const mockCreditValue = 777;
+        const customCreditFn: CreditCalculationFunction = jest.fn((metadata: ServerCreditMetadata) => mockCreditValue);
+        const customCreditServer = await SlipkeyServer.create({ calculateCredit: customCreditFn });
+        const freshClient = await SlipkeyClient.create();
+
+        const clientSlipResult = await freshClient.generateSlip(futureBlockTime(), defaultTargetScore);
+        expect(clientSlipResult).not.toBeNull(); if (!clientSlipResult) return;
+
+        const serverResponse = await customCreditServer.processClientToken(clientSlipResult.token, defaultTargetScore);
+        if (serverResponse.error !== undefined) throw new Error(serverResponse.error); // Corrected error check
+
+        expect(customCreditFn).toHaveBeenCalled();
+        expect(serverResponse.creditEarned).toBe(mockCreditValue);
+        const { payload } = await verifyJwt(serverResponse.newServerStateToken, customCreditServer.getPublicKeyJwk());
+        expect(payload.credit).toBe(mockCreditValue);
+    });
+
 
     // Error Cases
     test('should return error for invalid client token signature', async () => {
@@ -186,7 +239,7 @@ describe('SlipkeyServer', () => {
       expect(clientSlipResult).not.toBeNull(); if (!clientSlipResult) return;
 
       const attackerKeys = await generateRsaKeyPair();
-      const invalidClientToken = await signJwt(clientSlipResult.slipClaims as jose.JWTPayload, attackerKeys.privateKey);
+      const invalidClientToken = await signJwt(clientSlipResult.slipClaims as jose.JWTPayload, attackerKeys.privateKey, "1h");
 
       const serverResponse = await server.processClientToken(invalidClientToken, defaultTargetScore);
       expect(serverResponse.error).toBeDefined();
@@ -203,13 +256,10 @@ describe('SlipkeyServer', () => {
         const testClient = await SlipkeyClient.create();
         const clientPubKeyJwk = testClient.getPublicJwk();
         const slipClaims = {
-            pubkey: clientPubKeyJwk,
-            block: futureBlockTime(),
-            nonce: "testnonce",
-            state: "dummyPreviousServerStateJWT",
-            create: true,
+            pubkey: clientPubKeyJwk, block: futureBlockTime(), nonce: "testnonce",
+            state: "dummyPreviousServerStateJWT", create: true,
         };
-        const clientToken = await signJwt(slipClaims as jose.JWTPayload, (testClient as any).privateKeyJwk);
+        const clientToken = await signJwt(slipClaims as jose.JWTPayload, (testClient as any).privateKeyJwk, "1h");
         const serverResponse = await server.processClientToken(clientToken, defaultTargetScore);
         expect(serverResponse.error).toBeDefined();
         if(serverResponse.error === undefined) throw new Error("Test failed: error was expected to be defined.");
@@ -220,13 +270,10 @@ describe('SlipkeyServer', () => {
         const testClient = await SlipkeyClient.create();
         const clientPubKeyJwk = testClient.getPublicJwk();
         const slipClaims = {
-            pubkey: clientPubKeyJwk,
-            block: futureBlockTime(),
-            nonce: "testnonce",
-            state: null,
-            create: false,
+            pubkey: clientPubKeyJwk, block: futureBlockTime(), nonce: "testnonce",
+            state: null, create: false,
         };
-        const clientToken = await signJwt(slipClaims as jose.JWTPayload, (testClient as any).privateKeyJwk);
+        const clientToken = await signJwt(slipClaims as jose.JWTPayload, (testClient as any).privateKeyJwk, "1h");
         const serverResponse = await server.processClientToken(clientToken, defaultTargetScore);
         expect(serverResponse.error).toBeDefined();
         if(serverResponse.error === undefined) throw new Error("Test failed: error was expected to be defined.");
@@ -245,7 +292,35 @@ describe('SlipkeyServer', () => {
         expect(serverResponse.error).toContain("Proof-of-Work score too low");
     }, 20000);
 
-    test('should return error for invalid previous server state JWT', async () => {
+    test('should return error for an expired previous server state JWT', async () => {
+      const freshClient = await SlipkeyClient.create();
+      const serverWithShortExp = await SlipkeyServer.create({
+          serverName: "ShortExpServer",
+          defaultStateTokenExpiration: "1s"
+      });
+
+      const block1 = futureBlockTime();
+      const slip1 = await freshClient.generateSlip(block1, defaultTargetScore);
+      expect(slip1).not.toBeNull(); if(!slip1) return;
+      const token1 = slip1.token;
+      const serverResponse1 = await serverWithShortExp.processClientToken(token1, defaultTargetScore);
+      if(serverResponse1.error !== undefined) throw new Error("Genesis slip failed: " + serverResponse1.error); // Corrected
+      freshClient.processServerResponse({state: serverResponse1.newServerStateToken});
+
+      await new Promise(resolve => setTimeout(resolve, 1500));
+
+      const block2 = futureBlockTime();
+      const slip2 = await freshClient.generateSlip(block2, defaultTargetScore);
+      expect(slip2).not.toBeNull(); if(!slip2) return;
+      const token2 = slip2.token;
+
+      const serverResponse2 = await serverWithShortExp.processClientToken(token2, defaultTargetScore);
+      expect(serverResponse2.error).toBeDefined();
+      if(serverResponse2.error === undefined) throw new Error("Test failed: error for expired state was expected.");
+      expect(serverResponse2.error).toMatch(/Previous server state \(JWT\) is invalid.*(expired|JETDateViolation|clock tolerance|timestamp check failed)/i);
+    }, 20000);
+
+    test('should return error for invalid previous server state JWT (malformed)', async () => {
         const freshClient = await SlipkeyClient.create();
         const invalidPrevStateJwt = "this.is.not.a.valid.jwt";
 

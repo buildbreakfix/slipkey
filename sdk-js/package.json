@@ -8,13 +8,16 @@
     ".": "./dist/esm/index.js"
   },
   "scripts": {
-    "test": "NODE_OPTIONS=--experimental-vm-modules ./node_modules/.bin/jest"
+    "test": "NODE_OPTIONS=--experimental-vm-modules ./node_modules/.bin/jest",
+    "build": "tsc",
+    "build:bundle": "esbuild src/index.ts --bundle --outfile=dist/bundles/slipkey-sdk.umd.js --format=iife --global-name=SlipkeySDK"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "devDependencies": {
     "@types/jest": "^29.5.14",
+    "esbuild": "^0.25.5",
     "jest": "^29.7.0",
     "ts-jest": "^29.3.4",
     "typescript": "^5.8.3"

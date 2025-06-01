@@ -25,6 +25,13 @@ npm install slipkey-sdk
 ```
 *(Note: `slipkey-sdk` is a placeholder package name. Replace with the actual package name when published.)*
 
+### Module Formats and Usage Environments
+
+The SDK is distributed primarily as **ES Modules (ESM)**.
+*   **Node.js:** If you are using this SDK in a Node.js project, ensure your `package.json` has `"type": "module"` or use the `.mjs` extension for your files to enable ESM imports.
+*   **Bundlers (Webpack, Rollup, Parcel):** When using with bundlers, they should automatically pick up the ESM format.
+*   **Browser (via `<script>` tag):** A UMD (Universal Module Definition) bundle can be built for direct browser usage. Run `npm run build:bundle` in the `sdk-js` package directory. This creates `dist/bundles/slipkey-sdk.umd.js`, which exposes the SDK on the `window.SlipkeySDK` global object. See the "Browser Usage" section for more details.
+
 ## Getting Started / Basic Usage
 
 ### Importing
@@ -177,7 +184,7 @@ async function handleClientRequest(clientToken: string, server: SlipkeyServer) {
     *   `blockTimestampOrBlockSizeMs`: Optional. Either an ISO 8601 string for the `block` claim, or a number representing the block size in milliseconds (to be added to current time). If undefined, uses `client.defaultBlockSizeMs`.
     *   `targetScore`: Optional. Required PoW score (leading zeros). If undefined, uses `client.defaultTargetScore`.
     *   `currentServerStateOverride`: Optional. If provided, this JWT string is used as the "previous state" for PoW, overriding the client's internal `state`. Use `null` explicitly for a genesis slip if the client already has a state but a genesis slip is desired.
-    *   Returns a promise that resolves to an object containing `slipClaims` (the JWT payload), PoW details (`actualScore`, `nonce`, `hash`), and the client `token` (JWT string) if successful, or `null` if PoW fails.
+    *   Returns a promise that resolves to an object containing `slipClaims` (the JWT payload), PoW details (`actualScore`, `nonce`, `hash`), and the client `token` (JWT string) if successful, or `null` if PoW fails (e.g., max iterations reached or PoW deadline exceeded before a solution is found).
         *   `slipClaims`: Object containing `pubkey` (client's public JWK), `block`, `nonce`, `state` (the state used for PoW), and `create` (boolean flag indicating if it was a genesis slip). This is the payload of the generated `token`.
 
 *   **`client.processServerResponse(serverResponse: { state: string, ...any }): void`**
@@ -202,6 +209,10 @@ The `SlipkeyServer` class provides methods to handle client requests on the serv
     *   `config.initialPrivateKeyJwk` (optional `jose.JWK`): Server's private key. If provided, `initialPublicKeyJwk` can also be given, or it will be derived. New keys generated if omitted.
     *   `config.initialPublicKeyJwk` (optional `jose.JWK`): Server's public key.
     *   `config.serverName` (optional `string`): Issuer name for server-issued JWTs (defaults to "SlipkeyServerDefault").
+    *   `config.defaultStateTokenExpiration` (optional `string | number`): Default expiration time for server-issued state JWTs (e.g., "7d", "2h"). Defaults to "7d".
+    *   `config.calculateCredit` (optional `CreditCalculationFunction`): A custom function to calculate client credit. If not provided, a default implementation is used.
+        *   `CreditCalculationFunction` type: `(metadata: ServerCreditMetadata) => number`
+        *   See `ServerCreditMetadata` section below for the structure of the metadata object passed to this function.
 
 *   **`server.getPublicKeyJwk(): jose.JWK`**
     *   Returns the server's public key in JWK format (ensures `alg: 'RS256'` is present). Useful for clients or other services that might need to verify tokens issued by this server.
@@ -261,6 +272,23 @@ async function serverDemo() {
 // serverDemo();
 ```
 
+### `ServerCreditMetadata` Interface
+
+When providing a custom `calculateCredit` function to `SlipkeyServer.create(config)`, the function will receive a metadata object with the following structure:
+
+```typescript
+export interface ServerCreditMetadata {
+  blockTimestamp: string;       // The 'block' timestamp from the client's slip.
+  timeSolved: Date;           // Server's timestamp when the PoW solution was processed.
+  powScore: number;             // The score of the validated PoW.
+  chainLength: number;          // The new chain length for the client.
+  clientPublicKeyJwk: jose.JWK; // The client's public key (JWK).
+  previousCredit: number;       // The credit amount from the client's previous state.
+  previousChainLength: number;  // The chain length from the client's previous state.
+}
+```
+The default credit calculation is: `previousCredit + (powScore * 10) + chainLength`.
+
 ## Managing Client Keys (Persistence)
 (This section is largely unchanged but reviewed for consistency with API updates)
 ...
@@ -271,7 +299,7 @@ async function serverDemo() {
 
 ## Error Handling
 *   `SlipkeyClient.create()` and `SlipkeyServer.create()` may throw errors during key generation or if invalid initial keys are provided.
-*   `client.generateSlip(...)` returns `null` if PoW fails.
+*   `client.generateSlip(...)` returns `null` if PoW fails (e.g., max iterations or PoW deadline reached before a solution is found).
 *   `server.processClientToken(...)` returns an object with an `error` property if validation fails.
 *   The SDK itself does not handle network errors. The application using this SDK is responsible for managing server communication and interpreting server HTTP responses.
 
@@ -296,11 +324,11 @@ async function serverDemo() {
       const outputEl = document.getElementById('output');
       outputEl.textContent = 'Initializing client...\n';
 
-      if (typeof window.SlipkeyClient === 'undefined') { // Basic check
-        outputEl.textContent += 'Error: SlipkeyClient not found on window...\n';
+      if (typeof window.SlipkeySDK === 'undefined' || typeof window.SlipkeySDK.SlipkeyClient === 'undefined') {
+        outputEl.textContent += 'Error: SlipkeySDK or SlipkeySDK.SlipkeyClient not found on window...\n';
         return;
       }
-      const SlipkeyClient = window.SlipkeyClient;
+      const SlipkeyClient = window.SlipkeySDK.SlipkeyClient;
 
       try {
         const client = await SlipkeyClient.create();

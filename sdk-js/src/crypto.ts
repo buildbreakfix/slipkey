@@ -29,17 +29,30 @@ export async function generateRsaKeyPair(): Promise<{ publicKey: jose.JWK; priva
  *
  * @param payload The payload to sign (must be a plain object).
  * @param privateKeyJwk The private key in JWK format.
+ * @param expiresIn Optional. The expiration time for the JWT (e.g., "2h", "7d", or a numeric timestamp).
+ *                  If not provided, a default expiration (e.g., '2h') might be used or none if not set by SignJWT default.
  * @returns A promise that resolves to the JWT string.
  */
-export async function signJwt(payload: jose.JWTPayload, privateKeyJwk: jose.JWK): Promise<string> {
+export async function signJwt(
+  payload: jose.JWTPayload,
+  privateKeyJwk: jose.JWK,
+  expiresIn?: string | number
+): Promise<string> {
   // Ensure alg is present in JWK for import, default if necessary
   const alg = privateKeyJwk.alg || 'RS256';
   const privateKey = await jose.importJWK({...privateKeyJwk, alg }, alg);
-  const jwt = await new jose.SignJWT(payload)
-    .setProtectedHeader({ alg: 'RS256' }) // Standardize on RS256 for signing
-    .setIssuedAt()
-    .setExpirationTime('2h') // Example expiration time
-    .sign(privateKey);
+
+  const signJwtBuilder = new jose.SignJWT(payload)
+    .setProtectedHeader({ alg: alg }) // Use the determined alg, ensure it's RS256 for this context
+    .setIssuedAt();
+
+  if (expiresIn) {
+    signJwtBuilder.setExpirationTime(expiresIn);
+  } else {
+    signJwtBuilder.setExpirationTime('2h'); // Default expiration if none provided
+  }
+
+  const jwt = await signJwtBuilder.sign(privateKey);
   return jwt;
 }
 

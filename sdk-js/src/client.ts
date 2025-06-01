@@ -1,6 +1,6 @@
 import * as jose from 'jose';
-import { generateRsaKeyPair, signJwt, jwkToSpkiPem } from './crypto';
-import { solveProofOfWork } from './pow';
+import { generateRsaKeyPair, signJwt, jwkToSpkiPem } from './crypto.js';
+import { solveProofOfWork } from './pow.js';
 
 export interface SlipkeyClientConfig {
   defaultTargetScore?: number;
@@ -34,7 +34,7 @@ export class SlipkeyClient {
       if (!initialPrivateKeyJwk.d || !initialPrivateKeyJwk.n || !initialPrivateKeyJwk.e || !initialPrivateKeyJwk.kty) {
           throw new Error("Provided initialPrivateKeyJwk is incomplete or not a valid RSA private key.");
       }
-      this.privateKeyJwk = { ...initialPrivateKeyJwk }; // Use a copy
+      this.privateKeyJwk = { ...initialPrivateKeyJwk };
       if (!this.privateKeyJwk.alg) {
         this.privateKeyJwk.alg = 'RS256';
       }
@@ -43,12 +43,12 @@ export class SlipkeyClient {
           kty: this.privateKeyJwk.kty,
           n: this.privateKeyJwk.n,
           e: this.privateKeyJwk.e,
-          alg: this.privateKeyJwk.alg, // Should be set now
+          alg: this.privateKeyJwk.alg,
       };
     } else {
       const keyPair = await generateRsaKeyPair();
-      this.privateKeyJwk = keyPair.privateKey; // Already has alg: 'RS256' from generateRsaKeyPair
-      this.publicKeyJwk = keyPair.publicKey;   // Already has alg: 'RS256'
+      this.privateKeyJwk = keyPair.privateKey;
+      this.publicKeyJwk = keyPair.publicKey;
     }
     this.pemPublicKey = await jwkToSpkiPem(this.publicKeyJwk);
   }
@@ -74,8 +74,6 @@ export class SlipkeyClient {
     if (!this.publicKeyJwk) {
       throw new Error('Client not fully initialized. Public JWK not available.');
     }
-    // Defensively ensure 'alg' is present on the returned JWK.
-    // It should be set during _initializeAndCacheKeys from either generateRsaKeyPair or derived from initialPrivateKeyJwk.
     return {
         ...this.publicKeyJwk,
         alg: this.publicKeyJwk.alg || 'RS256'
@@ -87,7 +85,7 @@ export class SlipkeyClient {
     targetScore?: number,
     currentServerStateOverride?: string | null
   ): Promise<{ slipClaims: object; actualScore: number; nonce: string; hash: string; token: string } | null> {
-    if (!this.pemPublicKey || !this.publicKeyJwk || !this.privateKeyJwk) { // Added privateKeyJwk check for robustness
+    if (!this.pemPublicKey || !this.publicKeyJwk || !this.privateKeyJwk) {
       throw new Error('Client not fully initialized. Keys not available.');
     }
 
@@ -102,33 +100,37 @@ export class SlipkeyClient {
       actualBlockTimestamp = new Date(Date.now() + this.defaultBlockSizeMs).toISOString();
     }
 
-    const actualTargetScore = targetScore ?? this.defaultTargetScore;
+    const actualTargetScore = targetScore ?? this.defaultTargetScore; // Single declaration
+
+    const deadlineTimestampForPow = new Date(actualBlockTimestamp).getTime();
 
     const powResult = await solveProofOfWork(
       this.pemPublicKey,
       actualBlockTimestamp,
       stateForPow,
-      actualTargetScore
+      actualTargetScore,
+      undefined,
+      deadlineTimestampForPow
     );
 
     if (powResult) {
       const finalPowInputClient = `${this.pemPublicKey}${actualBlockTimestamp}${stateForPow === null ? '' : stateForPow}${powResult.nonce}`;
       console.log(`[CLIENT PoW INPUT]: "${finalPowInputClient}" (Score: ${powResult.score}, Hash: ${powResult.hash})`);
     } else {
-      return null; // PoW failed
+      return null;
     }
 
     const createFlag = stateForPow === null;
 
     const slipClaims = {
-      pubkey: this.getPublicJwk(), // Use getter to ensure consistent JWK (with alg)
+      pubkey: this.getPublicJwk(),
       block: actualBlockTimestamp,
       nonce: powResult.nonce,
       state: stateForPow,
       create: createFlag,
     };
 
-    const token = await signJwt(slipClaims as jose.JWTPayload, this.privateKeyJwk); // Corrected to signJwt
+    const token = await signJwt(slipClaims as jose.JWTPayload, this.privateKeyJwk);
 
     return {
       slipClaims,
