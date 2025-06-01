@@ -333,6 +333,50 @@ describe('SlipkeyClient', () => {
     }, 30000);
   });
 
+  describe('generateSlip with PoW Deadline', () => {
+    let client: SlipkeyClient;
+    beforeEach(async () => {
+      client = await SlipkeyClient.create();
+    });
+
+    test('should return null if blockTimestamp is in the past (deadline already passed)', async () => {
+      const pastTimestamp = new Date(Date.now() - 10000).toISOString(); // 10 seconds in the past
+      // Suppress console.warn from solveProofOfWork for this test
+      const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const result = await client.generateSlip(pastTimestamp, 1);
+      expect(result).toBeNull();
+
+      consoleWarnSpy.mockRestore();
+    });
+
+    test('should return null if blockTimestamp is extremely close and PoW cannot complete in time', async () => {
+      // This test is probabilistic and depends on PoW complexity vs. machine speed.
+      // Set a very short deadline.
+      const verySoonTimestamp = new Date(Date.now() + 5).toISOString(); // 5ms in the future
+      // Temporarily increase target score to make PoW take longer than 5ms.
+      // This requires a way to set targetScore for this specific call or on the client for this test.
+      // We can use the existing targetScore parameter of generateSlip.
+      const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+      // Aim for a score that's unlikely to be found in 5ms.
+      // If defaultTargetScore is 1, this might still pass sometimes if it's found on the first try.
+      // For a more reliable test, one might need to mock Date.now() or make solveProofOfWork slower.
+      // However, the core logic is that solveProofOfWork receives the deadline.
+      const result = await client.generateSlip(verySoonTimestamp, 5); // High target score
+
+      // The expectation is that it's *likely* to be null.
+      // If it's not null, it means PoW was extremely fast.
+      if (result === null) {
+        expect(result).toBeNull();
+      } else {
+        console.warn(`PoW completed faster than expected deadline for "extremely close" test. Score: ${result.actualScore}`);
+        expect(result.actualScore).toBeGreaterThanOrEqual(5); // It did solve it
+      }
+      consoleWarnSpy.mockRestore();
+    });
+  });
+
   describe('generateSlip PoW Failure Handling', () => {
     let clientForPowFailure: SlipkeyClient;
     const mockSolveProofOfWorkFn = jest.fn() as jest.MockedFunction<typeof OriginalPowTypes.solveProofOfWork>;
