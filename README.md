@@ -189,9 +189,11 @@ By following this approach, the client ensures that no valid solutions are lost 
 A reference implementation demonstrating client and server interactions, along with the core logic, can be found in `example-py/example.py`. This example showcases how to generate keys, solve PoW, create and validate slips, and manage state according to the Slipkey protocol.
 
 **Javascript (Browser & Node.js)**
-A JavaScript/TypeScript SDK is available in the `sdk-js/` directory.
-- **Features:** TypeScript-based, supports Node.js (v16+) and modern browsers, uses Web Crypto API for cryptographic operations (RSA key generation, JWT signing via `jose` library) and SHA-256 Proof-of-Work.
-- **Details & Usage:** For detailed API documentation and usage examples, please refer to the [sdk-js/README.md](sdk-js/README.md).
+A JavaScript/TypeScript SDK is available in the `sdk-js/` directory. This SDK provides:
+- **`SlipkeyClient`:** A class for client-side operations such as key management, Proof-of-Work generation, and client token creation.
+- **`SlipkeyServer`:** A class for server-side logic, including client token validation, PoW verification, and server state JWT issuance. (Note: This server class is suitable for embedding in a Node.js backend or for testing purposes; it is not a standalone, runnable server application.)
+- **Features:** TypeScript-based, supports Node.js (v16+) and modern browsers (client-side), uses Web Crypto API for cryptographic operations (RSA key generation, JWT signing via `jose` library) and SHA-256 Proof-of-Work.
+- **Details & Usage:** For detailed API documentation and usage examples for both client and server classes, please refer to the [sdk-js/README.md](sdk-js/README.md).
 - **Proof-of-Work:** The current PoW hashing (SHA-256) is implemented using the native Web Crypto API. Future optimizations may include using WebAssembly for performance-critical environments.
 
 ## FAQ

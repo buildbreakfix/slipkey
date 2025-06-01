@@ -26,6 +26,9 @@ describe('Crypto Functions', () => {
     expect(keyPair.privateKey).toBeDefined();
     expect(keyPair.publicKey.kty).toBe('RSA');
     expect(keyPair.privateKey.kty).toBe('RSA');
+    // Check for 'alg' field added in generateRsaKeyPair
+    expect(keyPair.publicKey.alg).toBe('RS256');
+    expect(keyPair.privateKey.alg).toBe('RS256');
   });
 
   it('signJwt and verifyJwt should correctly sign and verify a JWT', async () => {
