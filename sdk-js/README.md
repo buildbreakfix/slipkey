@@ -222,12 +222,13 @@ The `SlipkeyServer` class provides methods to handle client requests on the serv
     *   `clientToken`: The JWT string received from the client.
     *   `expectedTargetScore`: Optional. The PoW score the server expects for this slip (defaults to 1). This allows the server to enforce a minimum difficulty.
     *   Returns a Promise resolving to:
-        *   On Success: `{ newServerStateToken: string; score: number; creditEarned: number; chainLength: number; error?: undefined }`
+        *   On Success: `{ newServerStateToken: string; score: number; creditEarned: number; chainLength: number; isBelowTargetScore: boolean; error?: undefined }`
             *   `newServerStateToken`: The new JWT for the client to use as its state.
-            *   `score`: The PoW score calculated by the server.
-            *   `creditEarned`: The total credit for the client after this slip (example logic).
+            *   `score`: The PoW score calculated by the server for the current slip. A score `>0` is considered valid.
+            *   `creditEarned`: The new total credit for the client after this slip. If `isBelowTargetScore` is true and the default credit calculation is used, this total credit may be the same as the previous credit (i.e., no new credit earned for this specific slip).
             *   `chainLength`: The new length of the client's slip chain.
-        *   On Error: `{ error: string }` detailing the validation failure.
+            *   `isBelowTargetScore`: A boolean indicating if the slip's `score` was greater than 0 but less than the `expectedTargetScore` provided to this method. Slips are processed and considered valid even if below target, but credit calculation may differ.
+        *   On Error: `{ error: string }` detailing the validation failure (e.g., score <= 0, invalid signature, expired previous state).
 
 **Example: `SlipkeyServer` Usage**
 ```typescript
@@ -285,9 +286,10 @@ export interface ServerCreditMetadata {
   clientPublicKeyJwk: jose.JWK; // The client's public key (JWK).
   previousCredit: number;       // The credit amount from the client's previous state.
   previousChainLength: number;  // The chain length from the client's previous state.
+  isBelowTargetScore: boolean;  // True if powScore > 0 but less than the server's expectedTargetScore for this slip.
 }
 ```
-The default credit calculation is: `previousCredit + (powScore * 10) + chainLength`.
+The default credit calculation is: `metadata.previousCredit` if `metadata.isBelowTargetScore` is true, otherwise `metadata.previousCredit + (metadata.powScore * 10) + metadata.chainLength`.
 
 ## Managing Client Keys (Persistence)
 (This section is largely unchanged but reviewed for consistency with API updates)
