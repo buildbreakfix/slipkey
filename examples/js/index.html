@@ -17,8 +17,8 @@
   <pre id="output">Click the button to run the demo...</pre>
 
   <!-- Include the bundled SDK -->
-  <!-- Adjust path if your example-js/index.html is served from a different relative location to slipkey-js/dist -->
-  <script src="../slipkey-js/dist/bundles/slipkey-sdk.umd.js"></script>
+  <!-- Path adjusted assuming sdk-js is at root and this HTML is in examples/js/ -->
+  <script src="../../sdk-js/dist/bundles/slipkey-sdk.umd.js"></script>
 
   <script>
     const outputEl = document.getElementById('output');
@@ -36,7 +36,7 @@
 
       if (typeof SlipkeySDK === 'undefined' || typeof SlipkeySDK.SlipkeyClient === 'undefined') {
         log("Error: SlipkeySDK or SlipkeySDK.SlipkeyClient not found.");
-        log("Please ensure '../sdk-js/dist/bundles/slipkey-sdk.umd.js' is correctly built and loaded.");
+        log("Please ensure '../../sdk-js/dist/bundles/slipkey-sdk.umd.js' is correctly built and loaded.");
         runDemoButton.disabled = false;
         return;
       }
