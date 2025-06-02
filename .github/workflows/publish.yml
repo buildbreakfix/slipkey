@@ -23,17 +23,17 @@ jobs:
         node-version: '18.x' # Use an LTS version for publishing
         registry-url: 'https://registry.npmjs.org/' # Specify npm registry
         cache: 'npm'
-                cache-dependency-path: 'slipkey-js/package-lock.json' # Path to SDK's package-lock
+        cache-dependency-path: 'slipkey-js/package-lock.json' # Path to SDK's package-lock
 
     - name: Install dependencies, build SDK
-              working-directory: ./slipkey-js
+      working-directory: ./slipkey-js
       run: |
         npm ci
         npm run build       # For ESM type defs
         npm run build:bundle # For UMD bundle (if part of package, ensure listed in "files")
 
     - name: Publish to NPM
-              working-directory: ./slipkey-js
+      working-directory: ./slipkey-js
       run: npm publish --access public
       env:
         NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
