@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Slipkey SDK Vanilla JS Example</title>
+  <style>
+    body { font-family: sans-serif; margin: 20px; }
+    pre { background-color: #f4f4f4; padding: 10px; border: 1px solid #ddd; overflow-x: auto; }
+    button { padding: 10px 15px; margin-bottom: 10px; }
+  </style>
+</head>
+<body>
+  <h1>Slipkey SDK Vanilla JS Example</h1>
+  <button id="runDemoButton">Run Client Demo</button>
+  <h2>Output:</h2>
+  <pre id="output">Click the button to run the demo...</pre>
+
+  <!-- Include the bundled SDK -->
+  <!-- Path adjusted assuming sdk-js is at root and this HTML is in examples/js/ -->
+  <script src="../../sdk-js/dist/bundles/slipkey-sdk.umd.js"></script>
+
+  <script>
+    const outputEl = document.getElementById('output');
+    const runDemoButton = document.getElementById('runDemoButton');
+
+    function log(message) {
+      console.log(message);
+      outputEl.textContent += message + '\n';
+    }
+
+    async function runSlipkeyDemo() {
+      runDemoButton.disabled = true;
+      outputEl.textContent = ''; // Clear previous output
+      log("Initializing Slipkey Client...");
+
+      if (typeof SlipkeySDK === 'undefined' || typeof SlipkeySDK.SlipkeyClient === 'undefined') {
+        log("Error: SlipkeySDK or SlipkeySDK.SlipkeyClient not found.");
+        log("Please ensure '../../sdk-js/dist/bundles/slipkey-sdk.umd.js' is correctly built and loaded.");
+        runDemoButton.disabled = false;
+        return;
+      }
+
+      const SlipkeyClient = SlipkeySDK.SlipkeyClient;
+
+      try {
+        const client = await SlipkeyClient.create({
+          defaultTargetScore: 1, // Low for quick demo
+          defaultBlockSizeMs: 5000 // 5 seconds
+        });
+        log("Client created successfully.");
+        log("Client Public Key (PEM): " + client.getPublicKey().substring(0, 70) + "...");
+
+        log("\nAttempting to generate a slip (this may take a few seconds for PoW)...");
+        // Use a slightly future block time for the demo
+        const blockTimestamp = new Date(Date.now() + 3000).toISOString();
+        const slipResult = await client.generateSlip(blockTimestamp, 1);
+
+        if (slipResult) {
+          log("\nSlip and Token generated successfully!");
+          log("  Nonce: " + slipResult.nonce);
+          log("  Score: " + slipResult.actualScore);
+          log("  Create Flag: " + slipResult.slipClaims.create);
+          log("  Client Token (first 60 chars): " + slipResult.token.substring(0, 60) + "...");
+          log("\nIn a real application, this token would be sent to a server.");
+          log("The server would validate it and return a new state JWT.");
+          log("Client state would then be updated using: client.processServerResponse({ state: 'new.server.jwt' });");
+        } else {
+          log("\nFailed to generate slip (PoW might have timed out or found no solution quickly enough).");
+        }
+      } catch (error) {
+        log("\nAn error occurred: " + error.message);
+        console.error(error);
+      } finally {
+        runDemoButton.disabled = false;
+      }
+    }
+
+    runDemoButton.addEventListener('click', runSlipkeyDemo);
+  </script>
+</body>
+</html>
