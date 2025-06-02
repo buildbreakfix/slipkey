@@ -186,14 +186,14 @@ By following this approach, the client ensures that no valid solutions are lost 
 ## Implementation
 
 **Python**
-A reference implementation demonstrating client and server interactions, along with the core logic, can be found in `example-py/example.py`. This example showcases how to generate keys, solve PoW, create and validate slips, and manage state according to the Slipkey protocol.
+A reference implementation demonstrating client and server interactions, along with the core logic, can be found in `examples/python/example.py`. This example showcases how to generate keys, solve PoW, create and validate slips, and manage state according to the Slipkey protocol.
 
 **Javascript (Browser & Node.js)**
-A JavaScript/TypeScript SDK is available in the `sdk-js/` directory. This SDK provides:
+A JavaScript/TypeScript SDK is available in the `slipkey-js/` directory. This SDK provides:
 - **`SlipkeyClient`:** A class for client-side operations such as key management, Proof-of-Work generation, and client token creation.
 - **`SlipkeyServer`:** A class for server-side logic, including client token validation, PoW verification, and server state JWT issuance. (Note: This server class is suitable for embedding in a Node.js backend or for testing purposes; it is not a standalone, runnable server application.)
 - **Features:** TypeScript-based, supports Node.js (v16+) and modern browsers (client-side), uses Web Crypto API for cryptographic operations (RSA key generation, JWT signing via `jose` library) and SHA-256 Proof-of-Work.
-- **Details & Usage:** For detailed API documentation and usage examples for both client and server classes, please refer to the [sdk-js/README.md](sdk-js/README.md).
+- **Details & Usage:** For detailed API documentation and usage examples for both client and server classes, please refer to the [slipkey-js/README.md](slipkey-js/README.md).
 - **Proof-of-Work:** The current PoW hashing (SHA-256) is implemented using the native Web Crypto API. Future optimizations may include using WebAssembly for performance-critical environments.
 
 ## FAQ
@@ -223,7 +223,7 @@ The client must submit a JWT to the server with the following fields in its clai
 
 | Field       | Type     | Description                                                                 |
 |-------------|----------|-----------------------------------------------------------------------------|
-| `block`     | String   | The timestamp of the block being solved, in ISO 8601 format.               |
+| `block`     | String   | The timestamp of the block being solved, in ISO 8601 UTC format (e.g., "2023-10-27T10:00:00.000Z" or with +00:00 offset). |
 | `publicKey` | Object   | The public key of the client, in JWK (JSON Web Key) format.                |
 | `nonce`     | String   | A randomly generated value used to solve the hashing problem.             |
 | `state`     | String   | (Optional) The JWT representing the server's state from the previous block.|
@@ -246,7 +246,7 @@ The server responds with a JSON payload containing the following fields:
 
 #### 3. Hashing Algorithm
 The hashing algorithm used for solving blocks must meet the following criteria:
-- Input: Concatenation of the client's public key (in PEM format), the `block` (ISO 8601 timestamp string), the `state` (the full JWT string from the previous server response, or an empty string if none), and the `nonce` (random string).
+- Input: Concatenation of the client's public key (in PEM format), the `block` (ISO 8601 UTC timestamp string, e.g., "2023-10-27T10:00:00.000Z"), the `state` (the full JWT string from the previous server response, or an empty string if none), and the `nonce` (random string).
 - Output: A hexadecimal string representing the hash value.
 - Scoring: Determined by the number of leading zeros in the hash output.
 
@@ -273,7 +273,8 @@ Use a standard JSON Web Token Header, specifying the server's signing algorithm 
 | Field       | Type     | Description                                                                 |
 |-------------|----------|-----------------------------------------------------------------------------|
 | `sub`       | String   | (Recommended) A unique identifier for the subject (user/client), typically the client's public key JWK stringified or a fingerprint of the public key. |
-| `iat`       | Integer  | The timestamp when the JWT was issued, in UNIX epoch format.               |
+| `iat`       | Integer  | Issued At. NumericDate value (seconds since 1970-01-01T00:00:00Z UTC), representing when the JWT was issued. Must be UTC. |
+| `exp`       | Integer  | (Recommended) Expiration Time. NumericDate value (seconds since 1970-01-01T00:00:00Z UTC). Defines the time on or after which the JWT MUST NOT be accepted. Must be UTC. |
 | `publicKey` | Object   | The public key of the client, in JWK format, to whom this state belongs.   |
 | `block`     | String   | The timestamp of the solved block.                                         |
 | `len`       | Integer  | The length of the chain solved by the client.                              |
@@ -286,7 +287,7 @@ The server must return the following HTTP status codes for error handling:
 - `500 Internal Server Error`: Unexpected server-side error. Client is expected to retry.
 
 #### 7. Time Synchronization
-The server's clock is authoritative. Clients must account for potential clock drift by selecting block start timestamps with sufficient buffer time for latency and solutioning.
+The server's clock is authoritative. All timestamps exchanged within the protocol (e.g., `block` in client slips, `iat` and `exp` in server JWTs) must be in UTC to avoid ambiguity. Clients must account for potential clock drift by selecting block start timestamps with sufficient buffer time for latency and solutioning.
 
 ### Optional Features
 

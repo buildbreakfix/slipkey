@@ -23,14 +23,14 @@ jobs:
       with:
         node-version: ${{ matrix.node-version }}
         cache: 'npm' # Cache npm dependencies
-        cache-dependency-path: 'sdk-js/package-lock.json' # Path to package-lock
+        cache-dependency-path: 'slipkey-js/package-lock.json' # Path to package-lock
 
     - name: Install dependencies for SDK
-      working-directory: ./sdk-js
+      working-directory: ./slipkey-js
       run: npm ci # Use ci for cleaner installs in CI
 
     - name: Run tests for SDK
-      working-directory: ./sdk-js
+      working-directory: ./slipkey-js
       # The NODE_OPTIONS for ESM modules is already in the package.json test script.
       # If it weren't, setting it here in `env` would be necessary:
       # env:

@@ -5,7 +5,7 @@ This example demonstrates the usage of the `slipkey-sdk` with `SlipkeyClient` an
 ## Prerequisites
 
 - Node.js (version 18.x or 20.x recommended)
-- The `sdk-js` package must be built in the parent directory (`../sdk-js`). If you haven't built it yet, navigate to `../sdk-js` and run `npm run build` (or `npx tsc`). This compiles the TypeScript source to JavaScript modules.
+- The `slipkey-js` package must be built in the parent directory (`../../sdk-js`). If you haven't built it yet, navigate to `../../sdk-js` and run `npm run build` (or `npx tsc`). This compiles the TypeScript source to JavaScript modules.
 
 ## Setup (Node.js Example)
 
@@ -13,7 +13,7 @@ This example demonstrates the usage of the `slipkey-sdk` with `SlipkeyClient` an
     ```bash
     cd example-js
     ```
-2.  Install dependencies. This will link the local `slipkey-sdk` (from `../sdk-js/dist/esm`) and install other necessary packages for the Node.js example.
+2.  Install dependencies. This will link the local `slipkey-sdk` (from `../../sdk-js/dist/esm`) and install other necessary packages for the Node.js example.
     ```bash
     npm install
     ```
@@ -35,17 +35,17 @@ This example demonstrates using the `SlipkeyClient` directly in a browser using 
 ### Prerequisites for Browser Example
 
 1.  **Build the SDK Bundle:**
-    The `sdk-js` must be bundled into a UMD file. Navigate to the `sdk-js` directory and run the bundling script:
+    The `slipkey-js` must be bundled into a UMD file. Navigate to the `slipkey-js` directory (which is `../../sdk-js` from here) and run the bundling script:
     ```bash
-    cd ../sdk-js
+    cd ../../sdk-js
     npm run build:bundle
     ```
-    This command uses `esbuild` to create `../sdk-js/dist/bundles/slipkey-sdk.umd.js`. This bundle can be included directly in an HTML file.
+    This command uses `esbuild` to create `../../sdk-js/dist/bundles/slipkey-sdk.umd.js`. This bundle can be included directly in an HTML file.
 
 ### Running the Browser Example
 
 1.  **Open `index.html`:**
-    After ensuring the bundle `../sdk-js/dist/bundles/slipkey-sdk.umd.js` exists, simply open the `example-js/index.html` file directly in your web browser (e.g., by double-clicking it or using "File > Open" in your browser).
+    After ensuring the bundle `../../sdk-js/dist/bundles/slipkey-sdk.umd.js` exists, simply open the `examples/js/index.html` file directly in your web browser (e.g., by double-clicking it or using "File > Open" in your browser).
 
 2.  **Click "Run Client Demo":**
     The page will load, and you can click the button to see the `SlipkeyClient` in action.

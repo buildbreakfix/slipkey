@@ -1,7 +1,7 @@
 {
-  "name": "sdk",
-  "version": "1.0.0",
-  "description": "",
+  "name": "slipkey-sdk",
+  "version": "0.1.0",
+  "description": "JavaScript/TypeScript SDK for the Slipkey protocol",
   "type": "module",
   "main": "dist/esm/index.js",
   "exports": {
@@ -12,9 +12,33 @@
     "build": "tsc",
     "build:bundle": "esbuild src/index.ts --bundle --outfile=dist/bundles/slipkey-sdk.umd.js --format=iife --global-name=SlipkeySDK"
   },
-  "keywords": [],
   "author": "",
-  "license": "ISC",
+  "license": "MIT",
+  "keywords": [
+    "slipkey",
+    "proof-of-work",
+    "jwt",
+    "sdk",
+    "authentication",
+    "stateless"
+  ],
+  "homepage": "https://github.com/example/slipkey#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/example/slipkey.git"
+  },
+  "bugs": {
+    "url": "https://github.com/example/slipkey/issues"
+  },
+  "types": "dist/esm/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "devDependencies": {
     "@types/jest": "^29.5.14",
     "esbuild": "^0.25.5",

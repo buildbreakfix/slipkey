@@ -30,7 +30,7 @@ npm install slipkey-sdk
 The SDK is distributed primarily as **ES Modules (ESM)**.
 *   **Node.js:** If you are using this SDK in a Node.js project, ensure your `package.json` has `"type": "module"` or use the `.mjs` extension for your files to enable ESM imports.
 *   **Bundlers (Webpack, Rollup, Parcel):** When using with bundlers, they should automatically pick up the ESM format.
-*   **Browser (via `<script>` tag):** A UMD (Universal Module Definition) bundle can be built for direct browser usage. Run `npm run build:bundle` in the `sdk-js` package directory. This creates `dist/bundles/slipkey-sdk.umd.js`, which exposes the SDK on the `window.SlipkeySDK` global object. See the "Browser Usage" section for more details.
+*   **Browser (via `<script>` tag):** A UMD (Universal Module Definition) bundle can be built for direct browser usage. Run `npm run build:bundle` in the `slipkey-js` package directory. This creates `dist/bundles/slipkey-sdk.umd.js`, which exposes the SDK on the `window.SlipkeySDK` global object. See the "Browser Usage" section for more details.
 
 ## Getting Started / Basic Usage
 
@@ -360,3 +360,42 @@ The default credit calculation is: `previousCredit + (powScore * 10) + chainLeng
 ```
 (Note on bundle availability remains the same)
 ... (rest of README remains the same)
+
+---
+
+## Publishing (For Maintainers)
+
+To publish a new version of the `slipkey-sdk` to NPM:
+
+1.  **Update Version:**
+    *   Ensure the `version` field in `slipkey-js/package.json` is updated according to [Semantic Versioning (SemVer)](https://semver.org/).
+
+2.  **Commit Changes:**
+    *   Commit all your changes, including the `package.json` version update, to the main branch.
+    *   Example:
+        ```bash
+        git add slipkey-js/package.json
+        git commit -m "Bump version to vX.Y.Z"
+        git push origin main
+        ```
+
+3.  **Create Git Tag:**
+    *   Create a Git tag that matches the version in `package.json` (e.g., `vX.Y.Z`).
+    *   Example:
+        ```bash
+        git tag vX.Y.Z
+        ```
+
+4.  **Push Tag to GitHub:**
+    *   Push the tag to the GitHub repository.
+    *   Example:
+        ```bash
+        git push origin vX.Y.Z
+        ```
+
+5.  **GitHub Action for Publishing:**
+    *   Pushing a tag in the format `v*.*.*` will trigger the "Publish Slipkey SDK to NPM" GitHub Action defined in `.github/workflows/publish.yml`.
+    *   This action will automatically build the SDK (both ESM and UMD bundle) and publish it to NPM.
+
+6.  **NPM Token Secret:**
+    *   For the GitHub Action to successfully publish to NPM, an `NPM_TOKEN` secret must be configured in the GitHub repository settings. This token is an npm access token with publish permissions for the `slipkey-sdk` package.
