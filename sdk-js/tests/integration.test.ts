@@ -1,6 +1,6 @@
 import { jest } from '@jest/globals';
 import { SlipkeyClient, SlipkeyClientConfig } from '../src/client';
-import { SlipkeyServer, SlipkeyServerConfig as ServerConfig } from '../src/SlipkeyServer';
+import { SlipkeyServer, SlipkeyServerConfig as ServerConfig } from '../src/server';
 import { verifyJwt, generateRsaKeyPair, jwkToSpkiPem } from '../src/crypto';
 import * as jose from 'jose';
 import { webcrypto } from 'node:crypto';
@@ -18,6 +18,7 @@ type ServerSuccessResponse = {
   score: number;
   creditEarned: number;
   chainLength: number;
+  isBelowTargetScore: boolean; // New field
   error?: undefined;
 };
 
@@ -45,6 +46,7 @@ describe('Slipkey Client-Server Integration Tests', () => {
     if (serverResponse1.error !== undefined) {
       throw new Error(`Server failed on genesis slip: ${serverResponse1.error}`);
     }
+    expect(serverResponse1.isBelowTargetScore).toBe(false); // Assuming client target (1) meets server default target (1)
 
     expect(serverResponse1.newServerStateToken).toBeDefined();
     expect(typeof serverResponse1.newServerStateToken).toBe('string');
@@ -84,6 +86,7 @@ describe('Slipkey Client-Server Integration Tests', () => {
     if (serverResponse2.error !== undefined) {
       throw new Error(`Server failed on subsequent slip: ${serverResponse2.error}`);
     }
+    expect(serverResponse2.isBelowTargetScore).toBe(false); // Assuming client target (1) meets server default target (1)
 
     expect(serverResponse2.newServerStateToken).toBeDefined();
     const { payload: serverStatePayload2 } = await verifyJwt(serverResponse2.newServerStateToken, serverPubKeyJwk);
@@ -151,16 +154,65 @@ describe('Slipkey Client-Server Integration Tests', () => {
     expect(typeof errorResponse.error).toBe('string');
   });
 
-  test('Server should return error for PoW score mismatch (expects higher)', async () => {
-    const result = await client.generateSlip(undefined, 1);
-    expect(result).not.toBeNull();
-    if (!result) return;
-    expect(result.actualScore).toBeGreaterThanOrEqual(1);
+  test('should process slip with score below server expectedTargetScore as valid but with adjusted credit', async () => {
+    // Client aims for score 1 (default)
+    const clientForLowScore = await SlipkeyClient.create({ defaultTargetScore: 1 });
+    let result = await clientForLowScore.generateSlip(undefined, 1);
 
-    const serverResponse = await server.processClientToken(result.token, 5);
+    let attempts = 0;
+    while(result && result.actualScore !== 1 && attempts < 20) {
+        result = await clientForLowScore.generateSlip(undefined, 1);
+        attempts++;
+    }
+    expect(result).not.toBeNull(); if (!result) return;
+    // Ensure actual score is 1 for this test's credit logic to be precise
+    expect(result.actualScore).toBe(1);
 
-    expect(serverResponse.error).toBeDefined();
-    if (serverResponse.error === undefined) throw new Error("Test failed: PoW score error was expected.");
-    expect(serverResponse.error).toContain("Proof-of-Work score too low");
-  });
+
+    const serverExpectedScore = 2; // Server expects a higher score
+    const serverResponse = await server.processClientToken(result.token, serverExpectedScore);
+
+    expect(serverResponse.error).toBeUndefined(); // Should be a success response
+    if (serverResponse.error) throw new Error(`Test failed, expected success but got: ${serverResponse.error}`);
+
+    const successResponse = serverResponse as Required<Omit<typeof serverResponse, 'error'>>;
+    expect(successResponse.isBelowTargetScore).toBe(true); // score 1 is less than expected 2
+    expect(successResponse.score).toBe(1);
+    // For genesis slip, with default credit logic, and score below target, total credit is 0.
+    expect(successResponse.creditEarned).toBe(0);
+    expect(successResponse.chainLength).toBe(1);
+
+    const { payload: serverStatePayload } = await verifyJwt(successResponse.newServerStateToken, server.getPublicKeyJwk());
+    expect(serverStatePayload.credit).toBe(0);
+  }, 30000);
+
+  test('should process slip with score meeting server expectedTargetScore with normal credit', async () => {
+    const clientForNormalScore = await SlipkeyClient.create({ defaultTargetScore: 2 });
+    let result = await clientForNormalScore.generateSlip(undefined, 2); // Client aims for score 2
+
+    let attempts = 0;
+    while(result && result.actualScore < 2 && attempts < 30) { // Try harder to get score 2+
+        result = await clientForNormalScore.generateSlip(undefined, 2);
+        attempts++;
+    }
+    expect(result).not.toBeNull(); if (!result) return;
+    expect(result.actualScore).toBeGreaterThanOrEqual(2);
+
+    const serverExpectedScore = 2; // Server also expects score 2
+    const serverResponse = await server.processClientToken(result.token, serverExpectedScore);
+
+    expect(serverResponse.error).toBeUndefined();
+    if (serverResponse.error) throw new Error(`Test failed, expected success but got: ${serverResponse.error}`);
+
+    const successResponse = serverResponse as Required<Omit<typeof serverResponse, 'error'>>;
+    expect(successResponse.isBelowTargetScore).toBe(false);
+    expect(successResponse.score).toBe(result.actualScore);
+    // For genesis slip, with default credit logic, and score meeting target: (actualScore * 10) + chainLength (1)
+    expect(successResponse.creditEarned).toBe((result.actualScore * 10) + 1);
+    expect(successResponse.chainLength).toBe(1);
+
+    const { payload: serverStatePayload } = await verifyJwt(successResponse.newServerStateToken, server.getPublicKeyJwk());
+    expect(serverStatePayload.credit).toBe(successResponse.creditEarned);
+  }, 40000);
+
 });

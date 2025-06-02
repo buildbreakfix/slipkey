@@ -17,7 +17,7 @@ def generate_secret_key(algorithm='RSA'):
             public_exponent=65537,
             key_size=2048,
         )
-    
+
     return Exception("Unsupported algorithm")
 
 def serialize_secret_key(secret_key, algorithm='RSA'):
@@ -28,7 +28,7 @@ def serialize_secret_key(secret_key, algorithm='RSA'):
             format=serialization.PrivateFormat.TraditionalOpenSSL,
             encryption_algorithm=serialization.NoEncryption()
         ).decode('utf-8')
-    
+
     return Exception("Unsupported algorithm")
 
 def generate_public_key(private_key, algorithm='RSA'):
@@ -40,7 +40,7 @@ def generate_public_key(private_key, algorithm='RSA'):
             format=serialization.PublicFormat.SubjectPublicKeyInfo
         )
         return public_key.decode('utf-8')
-    
+
     return Exception("Unsupported algorithm")
 
 # --- PEM-JWK Conversion Utilities ---
@@ -124,14 +124,15 @@ class Client:
         block_ts = (start_time + timedelta(seconds=block_interval)).isoformat()
         nonce = None
         hashes = 0
-        block_start_time = datetime.now()
+        # Ensure all datetime objects are timezone-aware (UTC) for comparisons
+        current_block_attempt_start_time_utc = datetime.now(timezone.utc)
         while True:
             hashes += 1
             nonce = ''.join(random.choices(string.ascii_letters + string.digits, k=16))
             data = f"{self.public_key}{block_ts}{self.state or ''}{nonce}"
             hashed = hashlib.sha256(data.encode()).hexdigest()
             score = len(hashed) - len(hashed.lstrip('0'))
-                
+
             if not best_slip or score > best_slip['score']:
                 best_slip = {
                     "block": block_ts,
@@ -142,22 +143,35 @@ class Client:
                     "create": self.state is None
                 }
 
-            total_time = (datetime.now() - start_time).total_seconds()
-            block_time = (datetime.now() - block_start_time).total_seconds()
-            if block_time > progress_interval or total_time > max_interval or (target_score and score >= target_score):
+            # 'start_time' is the timestamp when this specific PoW search for current block_ts began.
+            # 'current_block_attempt_start_time_utc' is when this particular generate() call's loop began.
+            # The variable 'block_start_time' from main() is passed as 'start_time' to client.generate().
+            # This 'start_time' is already UTC.
+
+            # total_time for this PoW attempt for this specific block_ts
+            total_time_for_this_block_attempt = (datetime.now(timezone.utc) - start_time).total_seconds()
+            # block_time for the current iteration of the while loop (less relevant)
+            # The more relevant 'block_time' for progress_interval is how long this particular attempt has been running.
+            # Let's rename block_start_time from the loop to avoid confusion with the parameter.
+            current_loop_iteration_time_utc = datetime.now(timezone.utc)
+            time_spent_in_current_generate_call = (current_loop_iteration_time_utc - current_block_attempt_start_time_utc).total_seconds()
+
+
+            # The max_interval check should be against how long we've been trying for *this specific block_ts*
+            if time_spent_in_current_generate_call > progress_interval or total_time_for_this_block_attempt > max_interval or (target_score and score >= target_score):
                 return best_slip, {
-                    "done": (total_time > max_interval) or (target_score and score >= target_score), # Debug
+                    "done": (total_time_for_this_block_attempt > max_interval) or (target_score and score >= target_score), # Use total_time_for_this_block_attempt
                     "hashes": hashes,
-                    "elapsed": total_time
+                    "elapsed": total_time_for_this_block_attempt # Use total_time_for_this_block_attempt
                 }
-    
+
     def generate_token(self, slip, create=False):
         """
         Generate a JWT token based on the slip.
         """
         if not slip:
             raise ValueError("Slip is required")
-        
+
         # Create a JWT token with the slip data
         client_public_key_pem = slip['publicKey'] # This is the PEM string from the slip object
         client_public_key_jwk = pem_to_jwk(client_public_key_pem)
@@ -171,7 +185,7 @@ class Client:
         }
         # print(f"    [Client JWT Claims]: {json.dumps(claims, indent=2)}") # Temporary print removed
         token = jwt.encode(claims, self.secret_key, algorithm="RS256")
-        
+
         return token
 
     def receive(self, response):
@@ -183,7 +197,7 @@ class Client:
             credit = response['credit']
         except KeyError:
             return None, ValueError("Invalid response from server")
-        
+
         if not credit:
             raise ValueError("Invalid response: missing credit")
         if not isinstance(credit, int):
@@ -249,7 +263,7 @@ class Server:
             score = len(hashed) - len(hashed.lstrip('0'))
             if score <= 0:
                 return None, ValueError("Invalid proof-of-work solution (score <= 0).")
-            
+
             # Logic for handling 'create' flag and 'state' presence
             is_genesis = slip_claims.get('create', False)
             state_jwt_from_client = slip_claims.get('state')
@@ -281,7 +295,7 @@ class Server:
                 prev_state_client_jwk = decoded_state_payload.get('publicKey')
                 if not prev_state_client_jwk or not isinstance(prev_state_client_jwk, dict):
                      return None, ValueError("Invalid 'publicKey' (JWK) in previous server state.")
-                
+
                 # Compare essential fields of JWKs (n and e for RSA)
                 if (prev_state_client_jwk.get('n') != client_public_key_jwk.get('n') or
                     prev_state_client_jwk.get('e') != client_public_key_jwk.get('e') or
@@ -371,17 +385,19 @@ def main(client_secret_key, server_secret_key, algorithm, progress_interval, max
 
     credit = 0
     slip = None
-    generation_start_time = datetime.now()
+    # Use timezone.utc for all current time acquisitions
+    generation_start_time = datetime.now(timezone.utc)
     created = False
 
     def elapsed_time():
-        return (datetime.now() - generation_start_time)
+        # elapsed_time is relative to generation_start_time which is now UTC
+        return (datetime.now(timezone.utc) - generation_start_time)
 
     while credit < target_credit:
         log(CLIENT, "Generating slip...")
         progress = {}
         interval = 1
-        block_start_time = datetime.now()
+        block_start_time = datetime.now(timezone.utc)
         while progress.get('done', False) is False:
             # Generate a slip
             slip, progress = client.generate(block_start_time, block_interval=2*max_interval, max_interval=max_interval, progress_interval=progress_interval, target_score=target_score, best_slip=slip)
@@ -399,17 +415,17 @@ def main(client_secret_key, server_secret_key, algorithm, progress_interval, max
         res, err = server.submit(token)
         if err:
             raise err
-        
+
         log(SERVER, f"Slip accepted")
         log(SERVER, f"Credit={res['credit']}, Block={res['block']}, Len={res['len']}")
-        
+
         credit, err = client.receive(res)
         if err:
             raise err
-        
+
         log(CLIENT, f"Credit={credit}")
 
-        generation_start_time = datetime.now()
+        generation_start_time = datetime.now(timezone.utc)
         created = True
         slip = None
 
