@@ -7,7 +7,7 @@ This is a Python implementation of the `slipkey` protocol, including a `Client` 
 To install the required dependencies, run:
 
 ```bash
-pip install pyjwt click cryptography
+pip install pyjwt click
 ```
 
 ## Usage
@@ -68,4 +68,4 @@ This project is licensed under the MIT License. See the LICENSE file for details
 Contributions are welcome! Feel free to open an issue or submit a pull request.
 
 ## References
-For more details on the slipkey protocol, see the main project README.md (located two levels up at `../../README.md`).
+For more details on the slipkey protocol, see the main README.md in the parent directory.

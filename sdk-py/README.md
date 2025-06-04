@@ -9,7 +9,7 @@ This SDK allows developers to integrate Slipkey into their Python applications e
 To install the Slipkey Python SDK, you can use pip:
 
 ```bash
-pip install slipkey-sdk-py
+pip install slipkey-sdk
 # Note: This package name is hypothetical. If publishing, choose an appropriate name on PyPI.
 # For local development, you can install directly from the source:
 # pip install .

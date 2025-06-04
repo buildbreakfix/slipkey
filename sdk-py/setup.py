@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 setup(
-    name='slipkey-sdk-py',
+    name='slipkey-sdk',
     version='0.1.0',
     author='AI Agent (for Slipkey)', # Replace with appropriate author
     author_email='no-reply@example.com', # Replace with appropriate email
