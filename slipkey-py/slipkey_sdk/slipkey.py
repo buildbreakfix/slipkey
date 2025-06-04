@@ -5,6 +5,110 @@ import random
 import string
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import ed25519, rsa
+from cryptography.hazmat.backends import default_backend
+import base64
+import json
+from dataclasses import dataclass
+from typing import Callable
+
+
+# --- Configuration Dataclasses ---
+
+@dataclass
+class ServerCreditMetadata:
+    block_timestamp: str # ISO format string of the block solved
+    time_solved: datetime.datetime # UTC datetime object when the server validated the slip
+    pow_score: int
+    chain_length: int # The 'len' of the new state being issued
+    client_public_key_claim_value: dict | str # JWK dict for RSA, hex str for EdDSA
+    previous_credit: float | int
+    previous_chain_length: int
+    is_below_target_score: bool
+    # Consider adding nonce: str if useful for credit calculation, though typically not.
+
+@dataclass
+class SlipkeyClientConfig:
+    secret_key_input: str | object | None = None
+    algorithm: str = 'RSA' # Default to RSA as it's primary for JWK alignment
+    default_target_score: int = 1
+    default_max_pow_iterations: int = 1000000
+
+@dataclass
+class SlipkeyServerConfig:
+    secret_key_input: str | object | None = None
+    algorithm: str = 'RSA' # Default to RSA
+    default_state_token_expiration_seconds: int = 24 * 60 * 60 * 7 # 7 days
+    custom_credit_calculator: Callable[[ServerCreditMetadata], float | int] | None = None
+    default_expected_target_score: int = 1
+
+
+# --- PEM-JWK Conversion Utilities ---
+
+def pem_to_jwk(pem_public_key_str: str) -> dict:
+    """
+    Converts an RSA public key from PEM format to JWK format.
+    """
+    public_key = serialization.load_pem_public_key(
+        pem_public_key_str.encode('utf-8'),
+        backend=default_backend()
+    )
+
+    if not isinstance(public_key, rsa.RSAPublicKey):
+        raise ValueError("PEM key is not an RSA public key.")
+
+    numbers = public_key.public_numbers()
+    n = numbers.n
+    e = numbers.e
+
+    # Ensure n and e are positive for proper byte conversion
+    if n <= 0 or e <= 0:
+        raise ValueError("RSA public key components (n, e) must be positive.")
+
+    n_bytes = n.to_bytes((n.bit_length() + 7) // 8, byteorder='big')
+    e_bytes = e.to_bytes((e.bit_length() + 7) // 8, byteorder='big')
+
+    n_b64url = base64.urlsafe_b64encode(n_bytes).rstrip(b'=').decode('utf-8')
+    e_b64url = base64.urlsafe_b64encode(e_bytes).rstrip(b'=').decode('utf-8')
+
+    jwk = {
+        "kty": "RSA",
+        "n": n_b64url,
+        "e": e_b64url,
+        "alg": "RS256",
+    }
+    return jwk
+
+def jwk_to_pem(jwk_dict: dict) -> str:
+    """
+    Converts an RSA public key from JWK format to PEM format.
+    """
+    if not isinstance(jwk_dict, dict):
+        raise ValueError("JWK must be a dictionary.")
+    if jwk_dict.get("kty") != "RSA":
+        raise ValueError("JWK 'kty' must be 'RSA'.")
+    if 'n' not in jwk_dict or 'e' not in jwk_dict:
+        raise ValueError("JWK must contain 'n' and 'e' fields.")
+
+    n_b64url = jwk_dict['n']
+    e_b64url = jwk_dict['e']
+
+    # Add padding if necessary for base64.urlsafe_b64decode
+    n_bytes = base64.urlsafe_b64decode(n_b64url + '=' * (-len(n_b64url) % 4))
+    e_bytes = base64.urlsafe_b64decode(e_b64url + '=' * (-len(e_b64url) % 4))
+
+    n_int = int.from_bytes(n_bytes, byteorder='big')
+    e_int = int.from_bytes(e_bytes, byteorder='big')
+
+    public_numbers = rsa.RSAPublicNumbers(e=e_int, n=n_int)
+    public_key = public_numbers.public_key(backend=default_backend())
+
+    pem = public_key.public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+    return pem.decode('utf-8')
+
+# --- End PEM-JWK Conversion Utilities ---
 
 
 # --- Utility Functions ---
@@ -107,30 +211,31 @@ def generate_public_key(private_key, algorithm: str = 'EdDSA'):
 
 
 class SlipkeyClient:
-    def __init__(self, secret_key_input, algorithm: str = 'EdDSA'):
+    def __init__(self, config: SlipkeyClientConfig):
         """
         Initializes the SlipkeyClient.
 
         Args:
-            secret_key_input: The secret key. Can be a key object, or a string (hex for EdDSA, PEM for RSA).
-                              If None, a new key will be generated.
-            algorithm: The algorithm to use ('EdDSA' or 'RSA').
+            config: Configuration object for the client.
         """
-        self.algorithm = algorithm
+        self.config = config
+        self.algorithm = config.algorithm
+        self.default_target_score = config.default_target_score
+        self.default_max_pow_iterations = config.default_max_pow_iterations
 
-        if secret_key_input is None:
-            self.signing_key = generate_secret_key(algorithm)
-        elif isinstance(secret_key_input, str):
+        if config.secret_key_input is None:
+            self.signing_key = generate_secret_key(self.algorithm)
+        elif isinstance(config.secret_key_input, str):
             if self.algorithm == 'EdDSA':
                 try:
-                    private_key_bytes = bytes.fromhex(secret_key_input)
+                    private_key_bytes = bytes.fromhex(config.secret_key_input)
                     self.signing_key = ed25519.Ed25519PrivateKey.from_private_bytes(private_key_bytes)
                 except ValueError as e:
                     raise ValueError(f"Invalid hex secret key format for EdDSA: {e}")
             elif self.algorithm == 'RSA':
                 try:
                     self.signing_key = serialization.load_pem_private_key(
-                        secret_key_input.encode(), # PEM data needs to be bytes
+                        config.secret_key_input.encode(), # PEM data needs to be bytes
                         password=None
                     )
                     if not isinstance(self.signing_key, rsa.RSAPrivateKey):
@@ -140,142 +245,193 @@ class SlipkeyClient:
             else:
                 raise ValueError(f"Unsupported algorithm: {self.algorithm}")
         else: # Assuming key object is passed
-            if self.algorithm == 'EdDSA' and not isinstance(secret_key_input, ed25519.Ed25519PrivateKey):
+            if self.algorithm == 'EdDSA' and not isinstance(config.secret_key_input, ed25519.Ed25519PrivateKey):
                 raise ValueError("Provided key is not an Ed25519PrivateKey.")
-            elif self.algorithm == 'RSA' and not isinstance(secret_key_input, rsa.RSAPrivateKey):
+            elif self.algorithm == 'RSA' and not isinstance(config.secret_key_input, rsa.RSAPrivateKey):
                 raise ValueError("Provided key is not an RSAPrivateKey.")
-            self.signing_key = secret_key_input
+            self.signing_key = config.secret_key_input
 
-        # Derive and store public key (hex for EdDSA, PEM bytes for RSA)
-        # For consistency in JWT 'sub' and slip 'public_key', we will use hex for EdDSA raw public key
-        # and PEM for RSA public key. The server side will need to handle this.
-        _public_key_obj = self.signing_key.public_key()
+        # Derive and store public key representations
+        self.public_key_obj_ = self.signing_key.public_key() # Store the object for potential other uses
+
         if self.algorithm == 'EdDSA':
-            self.public_key_serial = _public_key_obj.public_bytes(
+            if not isinstance(self.public_key_obj_, ed25519.Ed25519PublicKey):
+                raise ValueError("Internal error: Public key is not an Ed25519PublicKey for EdDSA.")
+            # For EdDSA, public_key_serial remains the hex of raw bytes.
+            # PoW will use this hex string.
+            self.public_key_serial = self.public_key_obj_.public_bytes(
                 encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw
             ).hex()
+            self.public_key_pem_ = None # Not standard for EdDSA raw public keys
+            self.public_key_jwk_ = None # EdDSA JWKs are possible but not primary focus for this step
+
         elif self.algorithm == 'RSA':
-            self.public_key_serial = _public_key_obj.public_bytes(
-                encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo
-            ).decode() # Store as string
+            if not isinstance(self.public_key_obj_, rsa.RSAPublicKey):
+                raise ValueError("Internal error: Public key is not an RSAPublicKey for RSA.")
+            # Store PEM format, used for PoW
+            self.public_key_pem_ = self.public_key_obj_.public_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo
+            ).decode()
+            # Store JWK format
+            self.public_key_jwk_ = pem_to_jwk(self.public_key_pem_)
+            # For 'sub' field and general identification, current example uses public_key_serial.
+            # Let's keep public_key_serial as PEM for RSA for now to minimize changes to token creation/validation logic
+            # in this step. Next step will transition 'sub' to use JWK representation if desired.
+            self.public_key_serial = self.public_key_pem_
         else:
             raise ValueError(f"Unsupported algorithm for public key serialization: {self.algorithm}")
 
-
         self.credit = 0
 
-    def _calculate_score(self, data_to_hash: str) -> int:
+    def get_public_jwk(self) -> dict | None:
+        """Returns the public key in JWK format (primarily for RSA)."""
+        if self.algorithm == 'RSA':
+            return self.public_key_jwk_
+        return None # Or raise error, or return specific EdDSA JWK if implemented
+
+    def get_public_pem(self) -> str | None:
+        """Returns the public key in PEM format (primarily for RSA)."""
+        if self.algorithm == 'RSA':
+            return self.public_key_pem_
+        return None # EdDSA typically uses raw hex, not PEM for public key id
+
+    def _calculate_score(self, data_to_hash: str) -> tuple[int, str]:
         """Helper function to calculate score from hash."""
         hash_value = hashlib.sha256(data_to_hash.encode()).hexdigest()
-        # Score is the number of leading zeros in the binary representation of the hash
-        # This is a common PoW scoring mechanism.
-        # For simplicity, we'll use a part of the hex hash and convert to int.
-        # A more robust scoring would count leading zeros.
         score = 0
         for char in hash_value:
             if char == '0':
-                score +=1
+                score += 1
             else:
                 break
-        #Simulate a more granular score based on the first non-zero hex digit
-        if len(hash_value) > score:
-            first_non_zero_digit = hash_value[score]
-            score += (15 - int(first_non_zero_digit, 16))/15.0
-
         return score, hash_value
 
 
-    def generate_slip(self, start_time: int, block_interval: int, max_interval: int, progress_interval: int, target_score: int, best_slip: dict = None):
+    def generate_slip(self, block_iso_string: str, state_jwt: str | None, target_score: int, max_iterations: int = 1000000) -> dict :
         """
-        Generates a slip by performing hashing.
+        Generates a slip by performing hashing until a target score is met or max_iterations are reached.
 
         Args:
-            start_time: The start time of the slip generation.
-            block_interval: The interval for hashing blocks.
-            max_interval: The maximum interval for slip generation.
-            progress_interval: The interval for reporting progress.
-            target_score: The target score to achieve.
-            best_slip: The current best slip found.
+            block_iso_string: ISO format string for the block timestamp.
+            state_jwt: The JWT string of the previous server state, or None.
+            target_score: The minimum PoW score to achieve.
+            max_iterations: Maximum number of hashing attempts.
 
         Returns:
-            A tuple containing the best slip found and progress information.
+            A dictionary representing the slip if a solution meeting target_score is found.
+
+        Raises:
+            Exception: If no solution meeting target_score is found within max_iterations.
         """
-        if best_slip is None:
-            best_slip = {'score': 0}
+        key_for_pow = ""
+        if self.algorithm == 'RSA':
+            key_for_pow = self.public_key_pem_
+        elif self.algorithm == 'EdDSA':
+            key_for_pow = self.public_key_serial
+        else:
+            raise ValueError(f"Unsupported algorithm for PoW: {self.algorithm}")
 
-        current_time = datetime.datetime.now(datetime.timezone.utc).timestamp()
-        if current_time < start_time:
-            # It's not time to start yet
-            return best_slip, {'progress': 0, 'current_score': best_slip['score']}
+        if not key_for_pow: # Should not happen if __init__ is correct
+             raise ValueError("Public key for PoW is not available.")
 
-        time_elapsed = current_time - start_time
-        if time_elapsed > max_interval:
-            # Max interval reached
-            return best_slip, {'progress': 1, 'current_score': best_slip['score']}
+        state_jwt_or_empty = state_jwt if state_jwt is not None else ""
 
-        # More realistic hashing logic
-        # We are looking for a hash with a certain number of leading zeros (or a high score)
-        # This loop will run until time_elapsed > progress_interval or target_score is met
-        # It should not block for the entire max_interval in one call.
-        # The caller is expected to call this method multiple times.
+        best_slip_so_far = {'score': -1} # Holds the best slip found that might be below target
 
-        loop_start_time = datetime.datetime.now(datetime.timezone.utc).timestamp()
-
-        while True:
-            nonce = ''.join(random.choices(string.ascii_letters + string.digits, k=32)) # Increased nonce size
-            data_to_hash = f"{self.public_key_serial}{start_time}{nonce}" # Hash public_key, start_time, and nonce
-
+        for i in range(max_iterations):
+            nonce = ''.join(random.choices(string.ascii_letters + string.digits, k=32))
+            data_to_hash = f"{key_for_pow}{block_iso_string}{state_jwt_or_empty}{nonce}"
             score, hash_value = self._calculate_score(data_to_hash)
 
-            if score > best_slip.get('score', 0): # Use .get for initial case
-                best_slip = {
+            if score > best_slip_so_far['score']: # Found a new best
+                 best_slip_so_far = {
                     'score': score,
                     'nonce': nonce,
-                    'hash': hash_value, # Store the actual hash
-                    'start_time': start_time, # This is the 'block' in server terms
-                    'public_key': self.public_key_serial, # Use serialized public key
+                    'hash': hash_value,
+                    'start_time': block_iso_string, # Key expected by create_token
+                    'public_key_for_pow': key_for_pow, # For potential server-side reconstruction if needed
                     'algorithm': self.algorithm
                 }
 
-            current_loop_time = datetime.datetime.now(datetime.timezone.utc).timestamp()
-            if current_loop_time - loop_start_time > progress_interval / 1000.0 : # progress_interval is in ms in example
-                 # If we spent enough time in this call, return for progress update
-                 break
-            if best_slip.get('score',0) >= target_score:
-                break
+            if score >= target_score:
+                return best_slip_so_far # Return as soon as target is met
 
+        # Loop finished. Check if any valid slip (even if below target) was found.
+        if best_slip_so_far['score'] >= 0: # Found at least one hash with score >= 0
+            # As per current plan, we return even if below target, server validates.
+            # This matches JS SDK behavior where PoW can return a hash below target.
+            # Add iterations_taken to the returned slip details
+            best_slip_so_far['iterations_taken'] = i + 1
+            return best_slip_so_far
+        else: # No hash found with score >= 0 or max_iterations reached without any valid hash
+            raise Exception(f"Proof-of-Work failed to find any solution (score >= 0) within {max_iterations} iterations.")
 
-        # Calculate overall progress
-        current_time = datetime.datetime.now(datetime.timezone.utc).timestamp()
-        time_elapsed = current_time - start_time
-        progress = min(time_elapsed / max_interval, 1.0)
-        if best_slip.get('score',0) >= target_score :
-            progress = 1.0
-
-        return best_slip, {'progress': progress, 'current_score': best_slip.get('score',0)}
-
-    def create_token(self, slip: dict, create: bool = False) -> str:
+    def generate_signed_slip(self, block_iso_string: str, state_jwt: str | None, create: bool, target_score: int | None = None, max_iterations: int | None = None) -> dict:
         """
-        Creates a JWT token.
+        Generates a slip and then creates a signed JWT token for it.
+        """
+        eff_target_score = target_score if target_score is not None else self.default_target_score
+        eff_max_iterations = max_iterations if max_iterations is not None else self.default_max_pow_iterations
+
+        slip_details = self.generate_slip(block_iso_string, state_jwt, eff_target_score, eff_max_iterations)
+
+        # create_token expects 'start_time' in slip_details, which generate_slip provides.
+        token_jwt = self.create_token(slip_details, state_jwt, create)
+
+        return {
+            'slip_payload_for_jwt': { # Reflects what create_token now uses as its core payload
+                'publicKey': self.get_public_jwk() if self.algorithm == 'RSA' else self.public_key_serial,
+                'block': slip_details['start_time'],
+                'nonce': slip_details['nonce'],
+                'state': state_jwt,
+                'create': create
+            },
+            'pow_details': {
+                'score': slip_details['score'],
+                'hash': slip_details['hash'],
+                'nonce': slip_details['nonce'],
+                'iterations_taken': slip_details.get('iterations_taken')
+            },
+            'token': token_jwt,
+            'client_public_key_pem_for_pow': slip_details['public_key_for_pow']
+        }
+
+    def create_token(self, slip: dict, state_jwt: str | None, create: bool = False) -> str:
+        """
+        Creates a JWT token containing specified slip claims.
 
         Args:
-            slip: The slip object.
-            create: A flag indicating if this is a creation token (optional).
+            slip: The slip dictionary (must contain 'start_time', 'nonce').
+            state_jwt: The JWT string of the previous server state, or None if 'create' is True.
+            create: A flag indicating if this is a creation token.
 
         Returns:
             A JWT string.
         """
-        if not slip or 'score' not in slip:
-            raise ValueError("Invalid slip object.")
+        if not slip or 'start_time' not in slip or 'nonce' not in slip:
+            raise ValueError("Invalid slip object: must contain 'start_time' and 'nonce'.")
+
+        block_timestamp = slip.get('start_time')
+        nonce = slip.get('nonce')
 
         payload = {
             'iat': datetime.datetime.now(datetime.timezone.utc),
             'exp': datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=60), # Token expires in 60 seconds
-            'sub': self.public_key_serial, # The client's serialized public key
-            'slip': slip # The actual slip object
+            # 'sub' claim is removed as per new structure
+            'block': block_timestamp,
+            'nonce': nonce,
+            'state': state_jwt,
+            'create': create,
+            # Other slip components like score, hash are part of the 'slip' dict in the old model,
+            # but now are top-level or sourced from the 'slip' input parameter directly.
+            # The server will recalculate score and hash based on block, nonce, and publicKey.
         }
-        if create:
-            payload['create'] = True # Indicate this is for creating a new state
+
+        if self.algorithm == 'RSA':
+            payload['publicKey'] = self.get_public_jwk()
+        else: # EdDSA or other
+            payload['publicKey'] = self.public_key_serial # Hex string for EdDSA for now
 
         # For EdDSA/RSA with PyJWT and cryptography, we pass the key object directly
         # PyJWT determines the correct JWT alg (e.g. "EdDSA", "RS256") from the key type/algorithm specified
@@ -321,30 +477,36 @@ class SlipkeyClient:
 
 
 class SlipkeyServer:
-    def __init__(self, secret_key_input, algorithm: str = 'EdDSA'):
+    def __init__(self, config: SlipkeyServerConfig):
         """
         Initializes the SlipkeyServer.
 
         Args:
-            secret_key_input: The server's secret key. Can be a key object or string (hex for EdDSA, PEM for RSA).
-                              If None, a new key will be generated.
-            algorithm: The algorithm to use for signing state tokens ('EdDSA' or 'RSA').
+            config: Configuration object for the server.
         """
-        self.algorithm = algorithm
+        self.config = config
+        self.algorithm = config.algorithm
+        self.default_state_token_expiration_seconds = config.default_state_token_expiration_seconds
+        self.default_expected_target_score = config.default_expected_target_score
 
-        if secret_key_input is None:
-            self.signing_key = generate_secret_key(algorithm)
-        elif isinstance(secret_key_input, str):
+        if config.custom_credit_calculator is None:
+            self.credit_calculator = self._default_calculate_credit
+        else:
+            self.credit_calculator = config.custom_credit_calculator
+
+        if config.secret_key_input is None:
+            self.signing_key = generate_secret_key(self.algorithm)
+        elif isinstance(config.secret_key_input, str):
             if self.algorithm == 'EdDSA':
                 try:
-                    private_key_bytes = bytes.fromhex(secret_key_input)
+                    private_key_bytes = bytes.fromhex(config.secret_key_input)
                     self.signing_key = ed25519.Ed25519PrivateKey.from_private_bytes(private_key_bytes)
                 except ValueError as e:
                     raise ValueError(f"Invalid hex secret key format for EdDSA server key: {e}")
             elif self.algorithm == 'RSA':
                 try:
                     self.signing_key = serialization.load_pem_private_key(
-                        secret_key_input.encode(),
+                        config.secret_key_input.encode(),
                         password=None
                     )
                     if not isinstance(self.signing_key, rsa.RSAPrivateKey):
@@ -354,22 +516,34 @@ class SlipkeyServer:
             else:
                 raise ValueError(f"Unsupported server algorithm: {self.algorithm}")
         else: # Assuming key object
-            if self.algorithm == 'EdDSA' and not isinstance(secret_key_input, ed25519.Ed25519PrivateKey):
+            if self.algorithm == 'EdDSA' and not isinstance(config.secret_key_input, ed25519.Ed25519PrivateKey):
                 raise ValueError("Provided server key is not an Ed25519PrivateKey.")
-            elif self.algorithm == 'RSA' and not isinstance(secret_key_input, rsa.RSAPrivateKey):
+            elif self.algorithm == 'RSA' and not isinstance(config.secret_key_input, rsa.RSAPrivateKey):
                 raise ValueError("Provided server key is not an RSAPrivateKey.")
-            self.signing_key = secret_key_input
+            self.signing_key = config.secret_key_input
 
-        # Server's public key (primarily for clients to verify server-signed states if needed, though not used in this example)
-        _public_key_obj = self.signing_key.public_key()
+        # Server's public key representations
+        self.public_key_obj_ = self.signing_key.public_key()
+
         if self.algorithm == 'EdDSA':
-            self.public_key_serial = _public_key_obj.public_bytes(
+            if not isinstance(self.public_key_obj_, ed25519.Ed25519PublicKey):
+                raise ValueError("Internal error: Server public key is not an Ed25519PublicKey for EdDSA.")
+            self.public_key_serial = self.public_key_obj_.public_bytes(
                 encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw
             ).hex()
+            self.public_key_pem_ = None
+            self.public_key_jwk_ = None
         elif self.algorithm == 'RSA':
-             self.public_key_serial = _public_key_obj.public_bytes(
-                encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo
+            if not isinstance(self.public_key_obj_, rsa.RSAPublicKey):
+                raise ValueError("Internal error: Server public key is not an RSAPublicKey for RSA.")
+            self.public_key_pem_ = self.public_key_obj_.public_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo
             ).decode()
+            self.public_key_jwk_ = pem_to_jwk(self.public_key_pem_)
+            # public_key_serial used for 'sub' in server's own state tokens.
+            # Consistent with client, using PEM for now.
+            self.public_key_serial = self.public_key_pem_
         else:
             raise ValueError(f"Unsupported algorithm for server public key: {self.algorithm}")
 
@@ -378,25 +552,61 @@ class SlipkeyServer:
         self.seen_nonces = {} # Store as {nonce: timestamp}
         self.nonce_expiry_seconds = 300 # Nonces expire after 5 minutes
 
+    def _default_calculate_credit(self, metadata: ServerCreditMetadata) -> float | int:
+        """Default credit calculation logic."""
+        if metadata.is_below_target_score:
+            # No credit earned if score is below the expected target, but still valid PoW > 0
+            # This means the state is updated (nonce consumed, chain length might increment), but credit doesn't increase.
+            return metadata.previous_credit
+        # Example: score * 10 (base value for score) + chain_length (bonus for longer chains)
+        return metadata.previous_credit + (metadata.pow_score * 10) + metadata.chain_length
 
-    def _verify_and_decode_client_token(self, token: str, client_public_key_serial: str, client_algorithm: str) -> dict:
-        """Verifies and decodes a token using the client's public key (serialized)."""
+    def _determine_client_algorithm_from_pk_claim(self, public_key_claim_value: str | dict) -> str:
+        """Helper to determine client algorithm from the publicKey claim."""
+        if isinstance(public_key_claim_value, dict): # JWK
+            kty = public_key_claim_value.get('kty')
+            if kty == 'RSA':
+                return 'RSA'
+            # Add other kty mappings if needed (e.g., 'OKP' for EdDSA JWK)
+            raise ValueError(f"Unsupported JWK 'kty': {kty}")
+        elif isinstance(public_key_claim_value, str): # Hex string (assumed EdDSA for now)
+            # This is a simplification. A more robust system might require an explicit 'alg' claim
+            # alongside a raw public key string, or rely on prior registration of key type.
+            # For now, string means EdDSA.
+            return 'EdDSA'
+        else:
+            raise ValueError("Invalid format for publicKey claim.")
+
+    def _verify_and_decode_client_token(self, token: str, client_public_key_claim_value: str | dict, client_algorithm: str) -> dict:
+        """
+        Verifies and decodes a token using the client's public key (JWK dict for RSA, hex string for EdDSA).
+        """
         try:
-            verifying_key = None
-            jwt_algo_to_check = client_algorithm
-            if client_algorithm == 'EdDSA':
-                public_key_bytes = bytes.fromhex(client_public_key_serial)
-                verifying_key = ed25519.Ed25519PublicKey.from_public_bytes(public_key_bytes)
-                # PyJWT uses "EdDSA" for this
-            elif client_algorithm == 'RSA':
-                verifying_key = serialization.load_pem_public_key(client_public_key_serial.encode())
-                if not isinstance(verifying_key, rsa.RSAPublicKey):
-                    raise ValueError("Client public key is not a valid RSA PEM.")
-                jwt_algo_to_check = 'RS256' # Common JWT alg for RSA
+            verifying_key_obj = None
+            jwt_algo_to_check = client_algorithm # Default to client_algorithm (e.g., "EdDSA")
+
+            if client_algorithm == 'RSA':
+                if not isinstance(client_public_key_claim_value, dict):
+                    raise ValueError("client_public_key_claim_value must be a JWK dictionary for RSA.")
+                # Convert JWK to PEM, then load into cryptography key object
+                client_public_key_pem = jwk_to_pem(client_public_key_claim_value)
+                verifying_key_obj = serialization.load_pem_public_key(client_public_key_pem.encode())
+                if not isinstance(verifying_key_obj, rsa.RSAPublicKey):
+                    raise ValueError("Client public key JWK did not yield a valid RSA PEM.")
+                jwt_algo_to_check = 'RS256' # PyJWT uses 'RS256' for RSA
+            elif client_algorithm == 'EdDSA':
+                if not isinstance(client_public_key_claim_value, str):
+                    raise ValueError("client_public_key_claim_value must be a hex string for EdDSA.")
+                public_key_bytes = bytes.fromhex(client_public_key_claim_value)
+                verifying_key_obj = ed25519.Ed25519PublicKey.from_public_bytes(public_key_bytes)
+                # PyJWT uses "EdDSA" for this algorithm name
             else:
                 raise ValueError(f"Unsupported client algorithm for token verification: {client_algorithm}")
 
-            payload = jwt.decode(token, verifying_key, algorithms=[jwt_algo_to_check])
+            if verifying_key_obj is None:
+                 raise ValueError("Could not derive verification key.")
+
+            payload = jwt.decode(token, verifying_key_obj, algorithms=[jwt_algo_to_check])
             return payload
         except jwt.ExpiredSignatureError:
             raise ValueError("Client token has expired.")
@@ -405,18 +615,27 @@ class SlipkeyServer:
         except Exception as e:
             raise ValueError(f"Client token decoding/verification failed: {e}")
 
-    def _calculate_score(self, data_to_hash: str) -> int:
-        """Helper function to calculate score from hash. Mirrors client's _calculate_score."""
+    def get_public_jwk(self) -> dict | None:
+        """Returns the server's public key in JWK format (primarily for RSA)."""
+        if self.algorithm == 'RSA':
+            return self.public_key_jwk_
+        return None
+
+    def get_public_pem(self) -> str | None:
+        """Returns the server's public key in PEM format (primarily for RSA)."""
+        if self.algorithm == 'RSA':
+            return self.public_key_pem_
+        return None
+
+    def _calculate_score(self, data_to_hash: str) -> tuple[int, str]:
+        """Helper function to calculate score from hash."""
         hash_value = hashlib.sha256(data_to_hash.encode()).hexdigest()
         score = 0
         for char in hash_value:
             if char == '0':
-                score +=1
+                score += 1
             else:
                 break
-        if len(hash_value) > score:
-            first_non_zero_digit = hash_value[score]
-            score += (15 - int(first_non_zero_digit, 16))/15.0
         return score, hash_value
 
     def _cleanup_expired_nonces(self):
@@ -429,12 +648,14 @@ class SlipkeyServer:
         for nonce in expired_nonces:
             del self.seen_nonces[nonce]
 
-    def validate_slip(self, token: str) -> tuple[dict | None, str | None]:
+    def process_client_token(self, token: str, expected_target_score: int | None = None) -> tuple[dict | None, str | None]:
         """
-        Validates a slip JWT (token).
+        Processes and validates a client's slip JWT.
+        This was formerly validate_slip.
 
         Args:
             token: The slip JWT from the client.
+            expected_target_score: Optional; if provided, overrides server's default_expected_target_score for this validation.
 
         Returns:
             A tuple containing block information and None for error,
@@ -442,39 +663,39 @@ class SlipkeyServer:
         """
         self._cleanup_expired_nonces()
         try:
-            # 1. Decode token without signature verification to get public key
-            unverified_payload = jwt.decode(token, options={"verify_signature": False})
-            client_public_key_serial = unverified_payload.get('sub') # This is the serialized public key
-            slip_data = unverified_payload.get('slip')
+            # 1. Decode token without signature verification to get claims needed for verification key
+            # Ensure datetime is available for time_solved, and timezone for UTC
+            # from datetime import datetime, timezone (should be at top level)
 
-            if not client_public_key_serial or not isinstance(client_public_key_serial, str):
-                return None, "Missing or invalid 'sub' (client public key) in token."
-            if not slip_data or not isinstance(slip_data, dict):
-                return None, "Missing or invalid 'slip' data in token."
+            unverified_payload = jwt.decode(token, options={"verify_signature": False, "verify_exp": False, "verify_iat": False, "verify_nbf": False})
 
-            client_algorithm = slip_data.get('algorithm') # Algorithm used by client for this slip
-            if not client_algorithm:
-                return None, "Missing 'algorithm' in slip data."
+            client_pk_claim_value = unverified_payload.get('publicKey')
+            if not client_pk_claim_value:
+                return None, "Missing 'publicKey' claim in token."
 
+            client_algorithm_for_verification = self._determine_client_algorithm_from_pk_claim(client_pk_claim_value)
 
-            # 2. Verify token signature using the extracted public key and its algorithm
-            payload = self._verify_and_decode_client_token(token, client_public_key_serial, client_algorithm)
-            # Re-fetch slip_data from verified payload for security
-            slip_data = payload.get('slip')
-            if slip_data.get('public_key') != client_public_key_serial: # Compare serialized forms
-                 return None, "Token 'sub' does not match 'public_key' in slip data."
+            client_public_key_for_pow_and_sub = ""
+            if client_algorithm_for_verification == 'RSA':
+                if not isinstance(client_pk_claim_value, dict):
+                     return None, "publicKey claim for RSA client should be a JWK dictionary."
+                client_public_key_for_pow_and_sub = jwk_to_pem(client_pk_claim_value)
+            elif client_algorithm_for_verification == 'EdDSA':
+                if not isinstance(client_pk_claim_value, str):
+                    return None, "publicKey claim for EdDSA client should be a hex string."
+                client_public_key_for_pow_and_sub = client_pk_claim_value
+            else:
+                return None, f"Unsupported client algorithm derived: {client_algorithm_for_verification}"
 
+            payload = self._verify_and_decode_client_token(token, client_pk_claim_value, client_algorithm_for_verification)
 
-            # 3. Extract slip components
-            nonce = slip_data.get('nonce')
-            block_timestamp = slip_data.get('start_time') # This is the 'block' identifier
-            client_hash = slip_data.get('hash')
-            client_score = slip_data.get('score')
+            block_iso_from_payload = payload.get('block') # Renamed from block_timestamp for clarity
+            nonce_from_payload = payload.get('nonce')
             is_create = payload.get('create', False)
-            client_state_jwt = slip_data.get('state') # This is the JWT state from previous turn
+            client_state_jwt_from_payload = payload.get('state')
 
-            if not all([nonce, isinstance(block_timestamp, (int, float)), client_hash, isinstance(client_score, (int,float))]):
-                return None, "Invalid or missing components in slip data (nonce, start_time, hash, score)."
+            if not isinstance(block_iso_from_payload, str) or not nonce_from_payload: # block should be string (ISO format)
+                return None, "Invalid or missing components in token (block ISO string, nonce)."
 
             # Prevent replay attacks using nonce
             if nonce in self.seen_nonces:
@@ -483,96 +704,89 @@ class SlipkeyServer:
 
             # 4. Verify 'block' (start_time) is not in the future (allowing for small clock skew)
             current_server_time = datetime.datetime.now(datetime.timezone.utc).timestamp()
-            if block_timestamp > current_server_time + 60: # Allow 60s clock skew
-                return None, f"Slip 'start_time' ({block_timestamp}) is too far in the future."
+            # Convert block_iso_from_payload to numeric timestamp for comparison
+            try:
+                block_numeric_timestamp = datetime.datetime.fromisoformat(block_iso_from_payload.replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                return None, f"Invalid block ISO string format: {block_iso_from_payload}"
+
+            if block_numeric_timestamp > current_server_time + 60: # Allow 60s clock skew
+                return None, f"Slip 'block' timestamp ({block_iso_from_payload}) is too far in the future."
 
             # 5. Recalculate hash and verify score
-            # The data hashed by the client was: f"{client_public_key_serial}{start_time}{nonce}"
-            # This must use the same serialized form of the public key that the client used.
-
-            data_to_hash = f"{client_public_key_serial}{block_timestamp}{nonce}"
+            client_state_jwt_or_empty = client_state_jwt_from_payload if client_state_jwt_from_payload is not None else ""
+            data_to_hash = f"{client_public_key_for_pow_and_sub}{block_iso_from_payload}{client_state_jwt_or_empty}{nonce_from_payload}"
             recalculated_score, recalculated_hash = self._calculate_score(data_to_hash)
 
-            if recalculated_hash != client_hash:
-                return None, f"Hash mismatch. Client: {client_hash}, Server: {recalculated_hash}."
+            actual_expected_target_score = expected_target_score if expected_target_score is not None else self.default_expected_target_score
 
-            # Server recalculates score independently. Minor floating point differences might occur.
-            # It's often better to trust the client's claimed score if the hash matches,
-            # or re-evaluate based on the hash properties (e.g. leading zeros).
-            # For now, let's ensure client's score isn't wildly different from recalculated.
-            if abs(recalculated_score - client_score) > 0.00001 : # Tolerance for float comparison
-                 # Potentially log this discrepancy. For now, we can use the client's claimed score
-                 # if the hash is valid, or be strict and use server's. Let's use server's.
-                 pass # We will use recalculated_score
+            if not (recalculated_score > 0): # Basic PoW validity: must have some score
+                return None, f"Proof-of-work score ({recalculated_score}) is not sufficient (must be > 0)."
 
-            if not (recalculated_score > 0): # Score must be positive
-                return None, "Invalid score (must be > 0)."
+            is_below_target_score = (recalculated_score < actual_expected_target_score)
 
 
             # 6. Handle 'create' flag and 'state'
-            previous_credit = 0
+            previous_credit_from_state = 0.0
+            previous_len_from_state = 0
             if is_create:
-                if client_state_jwt is not None:
+                if client_state_jwt_from_payload is not None:
                     return None, "State must be absent when 'create' flag is True."
-            else: # Not a create request, so state must be present
-                if client_state_jwt is None:
+            else:
+                if client_state_jwt_from_payload is None:
                     return None, "State must be present when 'create' flag is False."
                 try:
-                    # Validate the incoming state JWT (signed by this server)
-                    # The 'key' for decoding server's own state token is its own public key.
-                    # The algorithm for the state token is self.algorithm (server's algorithm).
                     server_verifying_key_for_state = self.signing_key.public_key()
-
                     jwt_state_algo_to_check = self.algorithm
-                    if self.algorithm == 'RSA':
-                        jwt_state_algo_to_check = 'RS256'
+                    if self.algorithm == 'RSA': jwt_state_algo_to_check = 'RS256'
 
+                    state_payload = jwt.decode(client_state_jwt_from_payload, server_verifying_key_for_state, algorithms=[jwt_state_algo_to_check])
 
-                    state_payload = jwt.decode(
-                        client_state_jwt,
-                        server_verifying_key_for_state,
-                        algorithms=[jwt_state_algo_to_check]
-                    )
+                    if state_payload.get('sub') != client_public_key_for_pow_and_sub:
+                        return None, "Client public key (PEM/hex) in state 'sub' does not match current client's derived PEM/hex."
+                    if 'publicKey' in state_payload and state_payload.get('publicKey') != client_pk_claim_value:
+                        if client_algorithm_for_verification == 'RSA' and isinstance(client_pk_claim_value, dict):
+                            if json.dumps(state_payload.get('publicKey'), sort_keys=True) != json.dumps(client_pk_claim_value, sort_keys=True):
+                                return None, "Client 'publicKey' (JWK) in state does not match current client's 'publicKey' (JWK)."
+                        elif client_algorithm_for_verification == 'EdDSA' and isinstance(client_pk_claim_value, str):
+                            if state_payload.get('publicKey') != client_pk_claim_value:
+                                 return None, "Client 'publicKey' (hex) in state does not match current client's 'publicKey' (hex)."
 
-                    # Check if the public key in the state matches the slip's public key (client's PK)
-                    if state_payload.get('sub') != client_public_key_serial:
-                        return None, "Public key in state does not match current client's public key."
+                    previous_credit_from_state = state_payload.get('credit', 0.0)
+                    previous_len_from_state = state_payload.get('len', 0)
 
-                    # Check if the state is expired (e.g. based on 'iat' and a TTL)
-                    # For simplicity, we assume state doesn't expire here beyond token expiry.
-                    # A 'block' or 'len' check could also be done to ensure sequence.
-                    # For example, if block_timestamp <= state_payload.get('block'): return None, "Stale state"
+                except jwt.ExpiredSignatureError: return None, "Provided state token has expired."
+                except jwt.InvalidTokenError as e: return None, f"Invalid state token: {e}"
 
-                    previous_credit = state_payload.get('credit', 0)
+            # 7. Calculate credit earned using the configured credit_calculator
+            # The 'len' of the new state is based on previous_len_from_state.
+            new_chain_length = previous_len_from_state + 1
 
-                except jwt.ExpiredSignatureError:
-                    return None, "Provided state token has expired."
-                except jwt.InvalidTokenError as e:
-                    return None, f"Invalid state token: {e}"
-
-
-            # 7. If all checks pass, calculate credit earned
-            # Credit can be based on score, or other metrics. Example: 2 * score
-            # Ensure score is treated as a float if it can be.
-            credit_earned = 2 * float(recalculated_score)
-            current_total_credit = previous_credit + credit_earned
+            metadata = ServerCreditMetadata(
+                block_timestamp=block_iso_from_payload,
+                time_solved=datetime.datetime.now(datetime.timezone.utc),
+                pow_score=recalculated_score,
+                chain_length=new_chain_length,
+                client_public_key_claim_value=client_pk_claim_value,
+                previous_credit=previous_credit_from_state,
+                previous_chain_length=previous_len_from_state,
+                is_below_target_score=is_below_target_score
+            )
+            current_total_credit = self.credit_calculator(metadata)
+            credit_earned_this_slip = current_total_credit - previous_credit_from_state
 
             # 8. Generate new state object
-            # The 'block' for the new state should be the current slip's block_timestamp
-            # 'len' could be the duration this slip is valid for or some other metric
-            # For now, let's make 'len' the block_interval the client should aim for next.
-            # A server would typically define this.
-            new_block_identifier = block_timestamp # The block just validated
-            next_len_suggestion = 60 # Suggest next slip to be valid for 60s of work.
+            new_block_identifier = block_iso_from_payload
+            next_len_suggestion = new_chain_length # Server dictates the chain length in the new state.
 
             new_state_payload = {
-                'iat': datetime.datetime.now(datetime.timezone.utc).timestamp(),
-                'exp': datetime.datetime.now(datetime.timezone.utc).timestamp() + datetime.timedelta(days=1), # State valid for 1 day
-                'sub': client_public_key_serial, # Subject is the client's public key (serialized)
+                'iat': int(datetime.datetime.now(datetime.timezone.utc).timestamp()),
+                'exp': int(datetime.datetime.now(datetime.timezone.utc).timestamp() + datetime.timedelta(seconds=self.default_state_token_expiration_seconds)),
+                'sub': client_public_key_for_pow_and_sub,
+                'publicKey': client_pk_claim_value,
                 'credit': current_total_credit,
-                'block': new_block_identifier, # Last validated block
-                'len': next_len_suggestion, # Suggestion for next interval length
-                'server_algorithm': self.algorithm # Store server's algo for clarity if needed
+                'block': new_block_identifier,
+                'len': next_len_suggestion,
             }
 
             # 9. Encode new state into a JWT using the server's private key and its algorithm
@@ -592,10 +806,12 @@ class SlipkeyServer:
                 'len': next_len_suggestion,
                 'state': new_state_jwt,
                 'score': recalculated_score,
-                'hash': client_hash, # Echo back the client's hash
-                'expires': block_timestamp + next_len_suggestion, # When this new state effectively expires for submission
-                'credit': current_total_credit,
-                'creditEarned': credit_earned
+                'hash': recalculated_hash,
+                'expires': new_state_payload['exp'],
+                'credit': current_total_credit, # Updated total credit
+                'creditEarned': credit_earned_this_slip, # Newly earned credit
+                'publicKey': client_pk_claim_value,
+                'is_below_target_score': is_below_target_score # Inform client if score was below target
             }
             return response_data, None
 
