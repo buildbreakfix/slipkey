@@ -698,7 +698,7 @@ class SlipkeyServer:
                 return None, "Invalid or missing components in token (block ISO string, nonce)."
 
             # Prevent replay attacks using nonce
-            if nonce in self.seen_nonces:
+            if nonce_from_payload in self.seen_nonces:
                 return None, "Replayed nonce. This slip has already been processed."
 
 
@@ -797,7 +797,7 @@ class SlipkeyServer:
             new_state_jwt = jwt.encode(new_state_payload, self.signing_key, algorithm=jwt_server_state_algorithm)
 
             # Add nonce to seen list after successful processing
-            self.seen_nonces[nonce] = current_server_time
+            self.seen_nonces[nonce_from_payload] = current_server_time
 
 
             # 10. Return block information
