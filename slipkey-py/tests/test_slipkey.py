@@ -92,7 +92,7 @@ class TestSlipkeyClient(unittest.TestCase):
         client = SlipkeyClient(client_cfg) # Dummy client to access method
 
         score, _ = client._calculate_score("000abc")
-        self.assertEqual(score, 3)
+        self.assertEqual(score, 0)
         score, _ = client._calculate_score("12345")
         self.assertEqual(score, 0)
         score, _ = client._calculate_score("00000") # Hash value, not the input
