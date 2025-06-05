@@ -9,7 +9,7 @@ from cryptography.hazmat.backends import default_backend
 import base64
 import json
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, Union
 
 
 # --- Configuration Dataclasses ---
@@ -20,25 +20,25 @@ class ServerCreditMetadata:
     time_solved: datetime.datetime # UTC datetime object when the server validated the slip
     pow_score: int
     chain_length: int # The 'len' of the new state being issued
-    client_public_key_claim_value: dict | str # JWK dict for RSA, hex str for EdDSA
-    previous_credit: float | int
+    client_public_key_claim_value: Union[dict, str] # JWK dict for RSA, hex str for EdDSA
+    previous_credit: Union[float, int]
     previous_chain_length: int
     is_below_target_score: bool
     # Consider adding nonce: str if useful for credit calculation, though typically not.
 
 @dataclass
 class SlipkeyClientConfig:
-    secret_key_input: str | object | None = None
+    secret_key_input: Union[str, object, None] = None
     algorithm: str = 'RSA' # Default to RSA as it's primary for JWK alignment
     default_target_score: int = 1
     default_max_pow_iterations: int = 1000000
 
 @dataclass
 class SlipkeyServerConfig:
-    secret_key_input: str | object | None = None
+    secret_key_input: Union[str, object, None] = None
     algorithm: str = 'RSA' # Default to RSA
     default_state_token_expiration_seconds: int = 24 * 60 * 60 * 7 # 7 days
-    custom_credit_calculator: Callable[[ServerCreditMetadata], float | int] | None = None
+    custom_credit_calculator: Union[Callable[[ServerCreditMetadata], Union[float, int]], None] = None
     default_expected_target_score: int = 1
 
 
@@ -284,13 +284,13 @@ class SlipkeyClient:
 
         self.credit = 0
 
-    def get_public_jwk(self) -> dict | None:
+    def get_public_jwk(self) -> Union[dict, None]:
         """Returns the public key in JWK format (primarily for RSA)."""
         if self.algorithm == 'RSA':
             return self.public_key_jwk_
         return None # Or raise error, or return specific EdDSA JWK if implemented
 
-    def get_public_pem(self) -> str | None:
+    def get_public_pem(self) -> Union[str, None]:
         """Returns the public key in PEM format (primarily for RSA)."""
         if self.algorithm == 'RSA':
             return self.public_key_pem_
@@ -308,7 +308,7 @@ class SlipkeyClient:
         return score, hash_value
 
 
-    def generate_slip(self, block_iso_string: str, state_jwt: str | None, target_score: int, max_iterations: int = 1000000) -> dict :
+    def generate_slip(self, block_iso_string: str, state_jwt: Union[str, None], target_score: int, max_iterations: int = 1000000) -> dict :
         """
         Generates a slip by performing hashing until a target score is met or max_iterations are reached.
 
@@ -367,7 +367,7 @@ class SlipkeyClient:
         else: # No hash found with score >= 0 or max_iterations reached without any valid hash
             raise Exception(f"Proof-of-Work failed to find any solution (score >= 0) within {max_iterations} iterations.")
 
-    def generate_signed_slip(self, block_iso_string: str, state_jwt: str | None, create: bool, target_score: int | None = None, max_iterations: int | None = None) -> dict:
+    def generate_signed_slip(self, block_iso_string: str, state_jwt: Union[str, None], create: bool, target_score: Union[int, None] = None, max_iterations: Union[int, None] = None) -> dict:
         """
         Generates a slip and then creates a signed JWT token for it.
         """
@@ -397,7 +397,7 @@ class SlipkeyClient:
             'client_public_key_pem_for_pow': slip_details['public_key_for_pow']
         }
 
-    def create_token(self, slip: dict, state_jwt: str | None, create: bool = False) -> str:
+    def create_token(self, slip: dict, state_jwt: Union[str, None], create: bool = False) -> str:
         """
         Creates a JWT token containing specified slip claims.
 
@@ -442,7 +442,7 @@ class SlipkeyClient:
         token = jwt.encode(payload, self.signing_key, algorithm=jwt_algorithm)
         return token
 
-    def process_response(self, response: dict) -> tuple[int, str | None]:
+    def process_response(self, response: dict) -> tuple[int, Union[str, None]]:
         """
         Processes the server's response.
 
@@ -552,7 +552,7 @@ class SlipkeyServer:
         self.seen_nonces = {} # Store as {nonce: timestamp}
         self.nonce_expiry_seconds = 300 # Nonces expire after 5 minutes
 
-    def _default_calculate_credit(self, metadata: ServerCreditMetadata) -> float | int:
+    def _default_calculate_credit(self, metadata: ServerCreditMetadata) -> Union[float, int]:
         """Default credit calculation logic."""
         if metadata.is_below_target_score:
             # No credit earned if score is below the expected target, but still valid PoW > 0
@@ -561,7 +561,7 @@ class SlipkeyServer:
         # Example: score * 10 (base value for score) + chain_length (bonus for longer chains)
         return metadata.previous_credit + (metadata.pow_score * 10) + metadata.chain_length
 
-    def _determine_client_algorithm_from_pk_claim(self, public_key_claim_value: str | dict) -> str:
+    def _determine_client_algorithm_from_pk_claim(self, public_key_claim_value: Union[str, dict]) -> str:
         """Helper to determine client algorithm from the publicKey claim."""
         if isinstance(public_key_claim_value, dict): # JWK
             kty = public_key_claim_value.get('kty')
@@ -577,7 +577,7 @@ class SlipkeyServer:
         else:
             raise ValueError("Invalid format for publicKey claim.")
 
-    def _verify_and_decode_client_token(self, token: str, client_public_key_claim_value: str | dict, client_algorithm: str) -> dict:
+    def _verify_and_decode_client_token(self, token: str, client_public_key_claim_value: Union[str, dict], client_algorithm: str) -> dict:
         """
         Verifies and decodes a token using the client's public key (JWK dict for RSA, hex string for EdDSA).
         """
@@ -615,13 +615,13 @@ class SlipkeyServer:
         except Exception as e:
             raise ValueError(f"Client token decoding/verification failed: {e}")
 
-    def get_public_jwk(self) -> dict | None:
+    def get_public_jwk(self) -> Union[dict, None]:
         """Returns the server's public key in JWK format (primarily for RSA)."""
         if self.algorithm == 'RSA':
             return self.public_key_jwk_
         return None
 
-    def get_public_pem(self) -> str | None:
+    def get_public_pem(self) -> Union[str, None]:
         """Returns the server's public key in PEM format (primarily for RSA)."""
         if self.algorithm == 'RSA':
             return self.public_key_pem_
@@ -648,7 +648,7 @@ class SlipkeyServer:
         for nonce in expired_nonces:
             del self.seen_nonces[nonce]
 
-    def process_client_token(self, token: str, expected_target_score: int | None = None) -> tuple[dict | None, str | None]:
+    def process_client_token(self, token: str, expected_target_score: Union[int, None] = None) -> tuple[Union[dict, None], Union[str, None]]:
         """
         Processes and validates a client's slip JWT.
         This was formerly validate_slip.
