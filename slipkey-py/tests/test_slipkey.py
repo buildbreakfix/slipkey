@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 import time # For simulating time progression
 import datetime
 from slipkey_sdk.slipkey import (
@@ -86,33 +87,51 @@ class TestSlipkeyClient(unittest.TestCase):
         self.assertIsNone(client.get_public_pem()) # EdDSA uses hex serial
         self.assertIsNotNone(client.public_key_serial) # Hex string
 
-    def test_calculate_score(self):
+    def test_calculate_score_real_hashes(self):
         # Test this internal method (it's identical in client and server)
         client_cfg = SlipkeyClientConfig()
         client = SlipkeyClient(client_cfg) # Dummy client to access method
 
-        score, _ = client._calculate_score("000abc")
+        # Test with actual inputs, expecting their real hash scores
+        score, _ = client._calculate_score("000abc") # SHA256("000abc") = 15d9... -> score 0
         self.assertEqual(score, 0)
-        score, _ = client._calculate_score("12345")
+        score, _ = client._calculate_score("12345")  # SHA256("12345") = 5994... -> score 0
         self.assertEqual(score, 0)
-        score, _ = client._calculate_score("00000") # Hash value, not the input
-        # To test "00000" as hash, we'd need to find input that produces it.
-        # Instead, test edge cases based on direct hash values
-        test_hash_5_zeros = "00000" + "f" * (64-5)
-        score, _ = client._calculate_score(test_hash_5_zeros) # Mocking that data_to_hash produced this
-        self.assertEqual(score, 5, "Score should be 5 for 5 leading zeros")
-
-        test_hash_no_zeros = "f" * 64
-        score, _ = client._calculate_score(test_hash_no_zeros)
-        self.assertEqual(score, 0, "Score should be 0 for no leading zeros")
-
-        test_hash_all_zeros = "0" * 64
-        score, _ = client._calculate_score(test_hash_all_zeros)
-        self.assertEqual(score, 64, "Score should be 64 for all zeros")
-
-        score, _ = client._calculate_score("") # Empty hash string (unlikely but test)
+        # The input "00000" will also be hashed, its hash likely won't start with 5 zeros.
+        # SHA256("00000") = edd169795f7c... -> score 0
+        score, _ = client._calculate_score("00000")
         self.assertEqual(score, 0)
 
+    @patch('slipkey_sdk.slipkey.hashlib.sha256') # Patching where hashlib is used by slipkey.py
+    def test_calculate_score_mocked_hash(self, mock_sha256):
+       client_cfg = SlipkeyClientConfig()
+       client = SlipkeyClient(client_cfg)
+
+       # Configure the mock to return a specific hexdigest
+       mock_sha256_instance = mock_sha256.return_value
+
+       # Test case 1: 5 leading zeros
+       test_hash_5_zeros = "00000" + "f" * (64-5)
+       mock_sha256_instance.hexdigest.return_value = test_hash_5_zeros
+       score, returned_hash = client._calculate_score("any_input_since_hash_is_mocked")
+       self.assertEqual(score, 5, "Score should be 5 for 5 leading zeros")
+       self.assertEqual(returned_hash, test_hash_5_zeros)
+
+       # Test case 2: 0 leading zeros
+       test_hash_no_zeros = "f" * 64
+       mock_sha256_instance.hexdigest.return_value = test_hash_no_zeros
+       score, returned_hash = client._calculate_score("another_input")
+       self.assertEqual(score, 0, "Score should be 0 for no leading zeros")
+       self.assertEqual(returned_hash, test_hash_no_zeros)
+
+       # Test case 3: Max score (all zeros - highly unlikely but good for testing score logic)
+       # Note: A full 64 '0's hash is practically impossible with SHA256
+       # For testing the loop, this is fine.
+       test_hash_all_zeros = "0" * 64
+       mock_sha256_instance.hexdigest.return_value = test_hash_all_zeros
+       score, returned_hash = client._calculate_score("max_score_input")
+       self.assertEqual(score, 64, "Score should be 64 for all zeros")
+       self.assertEqual(returned_hash, test_hash_all_zeros)
 
     def test_generate_slip_rsa(self):
         config = SlipkeyClientConfig(algorithm='RSA', default_target_score=1)
