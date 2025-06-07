@@ -150,11 +150,27 @@ class TestSlipkeyClient(unittest.TestCase):
         self.assertIn('iterations_taken', slip_details)
         self.assertLessEqual(slip_details['iterations_taken'], 100000)
 
-    def test_generate_slip_max_iterations_exception(self):
-        config = SlipkeyClientConfig(algorithm='RSA', default_target_score=100) # High target
+    def test_generate_slip_returns_best_effort_below_target(self): # New name
+        config = SlipkeyClientConfig(algorithm='RSA', default_target_score=100) # High target for PoW
         client = SlipkeyClient(config)
-        with self.assertRaisesRegex(Exception, "Proof-of-Work failed"):
-            client.generate_slip(current_iso_utc(), None, target_score=100, max_iterations=10)
+
+        # With a very high target_score and low max_iterations,
+        # we expect the method to return the best slip found, not raise an exception,
+        # unless no PoW (score >= 0) could be generated at all.
+        slip_details = client.generate_slip(
+            current_iso_utc(),
+            None,
+            target_score=100,
+            max_iterations=10
+        )
+
+        self.assertIsInstance(slip_details, dict, "Should return a dictionary")
+        self.assertIn('score', slip_details, "Slip details should contain a score")
+        self.assertLess(slip_details['score'], 100, "Score should be less than the unobtainable target")
+        self.assertGreaterEqual(slip_details['score'], 0, "Score should be non-negative")
+        self.assertIn('iterations_taken', slip_details, "Should report iterations_taken")
+        # All iterations should be consumed if target is not met and some PoW was found
+        self.assertEqual(slip_details['iterations_taken'], 10, "iterations_taken should be max_iterations")
 
     def test_generate_signed_slip_rsa(self):
         client_cfg = SlipkeyClientConfig(algorithm='RSA', default_target_score=1)
